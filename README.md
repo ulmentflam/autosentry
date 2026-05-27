@@ -102,6 +102,17 @@ curl -fsSL https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.
 The installer detects `uv`, `pipx`, or `pip` (in that order) and uses the
 best one available. Pin a specific version with `AUTOSENTRY_VERSION=0.2.0`.
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install ulmentflam/tap/autosentry
+```
+
+That one-liner taps `ulmentflam/homebrew-tap` and installs autosentry into its
+own virtualenv. Already tapped? `brew install autosentry`. Upgrade with
+`brew upgrade autosentry`. Each release auto-syncs the formula, so the tap
+tracks the latest version.
+
 ### From PyPI
 
 ```bash

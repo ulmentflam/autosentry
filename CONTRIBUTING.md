@@ -72,6 +72,61 @@ git commit --no-verify
 6. Write a clear commit message (imperative, present tense). Sign off with
    `Co-Authored-By:` if AI tools helped — we keep that visible on purpose.
 
+## Releasing
+
+Releases are tag-driven. Bump `version` in `pyproject.toml`, move the
+`## [Unreleased]` changelog entries under the new version, commit, then:
+
+```bash
+git tag v0.8.0
+git push origin v0.8.0
+```
+
+`.github/workflows/release.yml` then, in order:
+
+1. **build** — `uv build` produces the sdist + wheel and `twine check`s them.
+2. **publish-pypi** — uploads to PyPI via OIDC trusted publishing (no token).
+3. **github-release** — cuts a GitHub release with the artifacts attached.
+   Tags containing `b`/`rc` (e.g. `v0.8.0b1`) are marked as prereleases.
+4. **brew-bump** — syncs the Homebrew formula into
+   [`ulmentflam/homebrew-tap`](https://github.com/ulmentflam/homebrew-tap) so
+   `brew install ulmentflam/tap/autosentry` resolves to the new version.
+
+### Homebrew tap
+
+The formula source of truth is `packaging/distribution/autosentry.rb`. The
+`brew-bump` job copies it into the tap and rewrites only the top-level `url` +
+`sha256` from the freshly-tagged source tarball — the pinned Python `resource`
+blocks are left untouched.
+
+**One-time setup** (so `brew-bump` can push to the tap): create a fine-grained
+PAT scoped to `homebrew-tap` with *Contents: Read and write*, then
+`gh secret set HOMEBREW_TAP_TOKEN < token.txt` on this repo. Until that secret
+exists the job is a no-op (it's `continue-on-error`, so the release still
+succeeds) — sync the tap by hand instead:
+
+```bash
+TAG=v0.8.0
+URL="https://github.com/ulmentflam/autosentry/archive/refs/tags/${TAG}.tar.gz"
+SHA=$(curl -sSL "$URL" | sha256sum | awk '{print $1}')
+# In a homebrew-tap checkout:
+cp /path/to/autosentry/packaging/distribution/autosentry.rb Formula/autosentry.rb
+sed -i -E -e "s|^(  url )\"[^\"]+\"|\\1\"$URL\"|" \
+          -e "s|^(  sha256 )\"[a-f0-9]+\"|\\1\"$SHA\"|" Formula/autosentry.rb
+git commit -am "autosentry ${TAG}" && git push
+```
+
+**When dependencies change** (`pyproject.toml`), refresh the pinned `resource`
+blocks so the formula still builds offline in Homebrew's sandbox:
+
+```bash
+python3 packaging/distribution/gen_resources.py "autosentry==0.8.0"
+```
+
+Paste the emitted blocks into `packaging/distribution/autosentry.rb`. (On a
+non-nix Homebrew, `brew update-python-resources Formula/autosentry.rb` does the
+same thing in-place.)
+
 ## Designing a new component
 
 Each layer is small and pluggable. If you're adding to one:
