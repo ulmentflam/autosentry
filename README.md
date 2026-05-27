@@ -773,9 +773,17 @@ per-tool wrappers either embed it or reference it.
 
 ```bash
 autosentry update                    # update to latest stable
-autosentry update --check            # report current vs latest, no install
+autosentry update --check            # current vs latest; recommends how to upgrade
+autosentry update --check --json     # machine-readable: {"current","latest","is_outdated"}
 autosentry update --pre              # allow pre-releases
 ```
+
+`autosentry update` auto-detects how it was installed — uv tool, pipx,
+`pip --user`, or **Homebrew** — and runs the matching upgrade (`brew upgrade
+autosentry` for tap installs). `--check` caches the PyPI lookup for a day
+(pass `--no-cache` to force a live query) and always exits 0, so the
+`/autosentry` skill can run it on every invocation and nudge you when a newer
+release is out.
 
 Or use the standalone updater (works for installs made by `install.sh` even
 when the CLI itself is broken):

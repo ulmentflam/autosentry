@@ -10,8 +10,12 @@ root — read it first.
 command -v autosentry && autosentry --version
 [ -f autosentry.yaml ] && echo configured
 [ -f .autosentry/state.json ] && cat .autosentry/state.json
+autosentry update --check   # newer release? (cached daily)
 ```
 
+- If `autosentry update --check` prints `→ update available` → mention it
+  once and recommend the command it shows (`autosentry update`, or
+  `brew upgrade autosentry` for Homebrew). Don't upgrade unprompted.
 - Missing CLI → suggest the install one-liner from the README.
 - Missing config → `autosentry init`, then configure
   `process.command`, `config_snapshots`, detectors, and rules.

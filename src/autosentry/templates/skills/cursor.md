@@ -9,7 +9,12 @@ playbook is in `AGENTS.md` at the repo root — load that first.
 command -v autosentry && autosentry --version       # installed?
 [ -f autosentry.yaml ]                              # configured?
 [ -f .autosentry/state.json ]                       # running?
+autosentry update --check                           # newer release? (cached daily)
 ```
+
+If `autosentry update --check` prints `→ update available`, mention it
+once and recommend the command it shows (`autosentry update`, or
+`brew upgrade autosentry` for Homebrew). Don't upgrade unprompted.
 
 ## Routes
 

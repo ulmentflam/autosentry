@@ -6,6 +6,24 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — agent-driven update detection
+
+- **`autosentry update --check` now caches the PyPI lookup** for a day
+  (`~/.cache/autosentry`, XDG-aware; `--no-cache` forces a live query) and
+  **exits 0** whether or not you're behind, printing a recommendation
+  (`→ update available — run autosentry update`) when there's a newer
+  release. This lets the `/autosentry` skill run it on every invocation
+  without hammering PyPI or aborting triage chains.
+- **`autosentry update --json`** emits `{"current","latest","is_outdated"}`
+  for scripts and agents that prefer to parse the result.
+- **Homebrew installs are detected.** `update` recognizes a Cellar-based
+  install and runs `brew upgrade autosentry` (and recommends that command)
+  instead of falling back to `install.sh`.
+- **Skill playbooks now nudge updates.** `AGENTS.md` and the per-tool
+  `/autosentry` wrappers (Claude, Cursor, Codex, OpenCode, Zed, Gemini)
+  run the version check during triage and recommend the upgrade command
+  when one is available, without upgrading unprompted.
+
 ### Changed — default posture is agent-first
 
 - **`escalate_to_claude_after` default lowered** from `max_restarts // 2`

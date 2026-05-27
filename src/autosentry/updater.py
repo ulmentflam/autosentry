@@ -1,9 +1,10 @@
 """Self-update logic for autosentry.
 
-Detects how the CLI was installed (uv tool / pipx / pip --user / unknown)
-and dispatches to the corresponding upgrade command. ``--check`` queries
-PyPI for the latest version and reports current vs latest without
-touching anything.
+Detects how the CLI was installed (uv tool / pipx / pip --user / Homebrew /
+unknown) and dispatches to the corresponding upgrade command. ``--check``
+queries PyPI for the latest version and reports current vs latest without
+touching anything; the result is cached on disk so repeated agent-driven
+checks don't re-hit PyPI.
 
 The detection is best-effort. If we can't tell how autosentry got here,
 we shell out to ``install.sh`` (downloaded fresh from GitHub) as the
@@ -17,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -25,10 +27,15 @@ from typing import Literal
 
 from autosentry import __version__
 
-Method = Literal["uv", "pipx", "pip", "unknown"]
+Method = Literal["uv", "pipx", "pip", "brew", "unknown"]
 
 _PYPI_JSON = "https://pypi.org/pypi/autosentry/json"
 _INSTALL_SH_URL = "https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.sh"
+
+# How long a cached PyPI "latest version" stays fresh. Agents call
+# ``autosentry update --check`` on every /autosentry invocation, so we
+# re-query PyPI at most once a day and serve the rest from disk.
+_CHECK_TTL_SECONDS = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,12 @@ def detect_install_method() -> Method:
     py = Path(sys.executable).resolve()
     home = Path.home()
 
+    # Homebrew installs the formula's virtualenv under
+    # <prefix>/Cellar/autosentry/<ver>/libexec; the bin/autosentry symlink
+    # resolves back into that Cellar path. Detect it so we recommend
+    # `brew upgrade` instead of clobbering the Cellar with install.sh.
+    if "/Cellar/autosentry/" in str(py):
+        return "brew"
     # uv tool installs land under: $HOME/.local/share/uv/tools/<name>/...
     if "uv/tools" in str(py) or "uv\\tools" in str(py):
         return "uv"
@@ -103,8 +116,60 @@ def _version_key(v: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def check(*, allow_pre: bool = False) -> UpdateCheck:
-    latest = fetch_latest_version(allow_pre=allow_pre)
+def _cache_path() -> Path:
+    """Where the last 'latest version' lookup is cached (XDG-aware)."""
+    base = os.environ.get("XDG_CACHE_HOME")
+    root = Path(base) if base else Path.home() / ".cache"
+    return root / "autosentry" / "update-check.json"
+
+
+def _read_cache(*, allow_pre: bool, ttl: int) -> str | None:
+    """Return the cached latest version if fresh and matching, else None.
+
+    Best-effort: any read/parse error or schema mismatch is a cache miss.
+    """
+    try:
+        data = json.loads(_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):  # valid JSON but wrong shape (e.g. []) → miss
+        return None
+    latest = data.get("latest")
+    checked_at = data.get("checked_at")
+    if data.get("allow_pre") != allow_pre or not isinstance(latest, str):
+        return None
+    if not isinstance(checked_at, (int, float)) or time.time() - checked_at > ttl:
+        return None
+    return latest
+
+
+def _write_cache(*, latest: str, allow_pre: bool) -> None:
+    """Persist the lookup. Never raises — the cache is an optimization."""
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"checked_at": time.time(), "latest": latest, "allow_pre": allow_pre}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def check(
+    *, allow_pre: bool = False, use_cache: bool = True, ttl: int = _CHECK_TTL_SECONDS
+) -> UpdateCheck:
+    """Compare the running version against the latest on PyPI.
+
+    With ``use_cache`` (the default) the PyPI lookup is served from a
+    disk cache for ``ttl`` seconds, so an agent can call this on every
+    turn without hammering PyPI. Pass ``use_cache=False`` to force a
+    live query.
+    """
+    latest = _read_cache(allow_pre=allow_pre, ttl=ttl) if use_cache else None
+    if latest is None:
+        latest = fetch_latest_version(allow_pre=allow_pre)
+        _write_cache(latest=latest, allow_pre=allow_pre)
     return UpdateCheck(
         current=__version__,
         latest=latest,
@@ -139,6 +204,12 @@ def perform_update(
     if chosen == "pip":
         py = os.environ.get("AUTOSENTRY_PYTHON") or sys.executable
         return _run([py, "-m", "pip", "install", "--user", "--upgrade", *pre, spec])
+    if chosen == "brew":
+        # brew can't honor --pre or a pinned --version against our tap, so
+        # those cases fall through to install.sh. The plain case is a tap bump.
+        if shutil.which("brew") and not allow_pre and not version:
+            return _run(["brew", "upgrade", "autosentry"])
+        return _fallback_to_install_sh(allow_pre=allow_pre, version=version)
     return _fallback_to_install_sh(allow_pre=allow_pre, version=version)
 
 
