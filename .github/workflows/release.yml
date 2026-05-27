@@ -44,9 +44,6 @@ jobs:
     name: publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/autosentry
     permissions:
       id-token: write   # trusted publishing — no API token
     steps:
