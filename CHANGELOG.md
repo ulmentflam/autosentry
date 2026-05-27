@@ -23,6 +23,27 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   back the agent path — fix branches, outcome verification, attempts
   ledger.
 
+## [0.7.2] — 2026-05-26
+
+### Changed
+
+- **PyPI summary rewritten** to match the README hero voice:
+  *"Self-healing supervisor for long-running processes — watch a
+  command, catch the failure, fix it, leave a paper trail."* The
+  previous one-liner read like a feature list.
+
+### Fixed
+
+- **`Detector._last_fired_at` no longer false-positives the cooldown on
+  the very first observation.** Initializing to `0.0` meant the first
+  call to `observe_line` was considered on-cooldown whenever
+  `time.monotonic()` (boot-relative, so small on fresh CI runners) was
+  less than `cooldown_seconds`. Now initialized to `-inf` so a
+  never-fired detector is correctly off-cooldown.
+- **`test_init_install_skills_local_drops_files`** strips ANSI SGR
+  codes before its substring assertion. CI sets `FORCE_COLOR=1`, which
+  makes Rich emit color escapes that split the asserted string.
+
 ## [0.7.1] — 2026-05-26
 
 ### CI / Release
