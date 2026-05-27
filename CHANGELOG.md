@@ -23,6 +23,23 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   back the agent path — fix branches, outcome verification, attempts
   ledger.
 
+## [0.7.3] — 2026-05-27
+
+### Fixed
+
+- **`autosentry --version` now reports the real installed version.**
+  `__version__` was a hardcoded string in `src/autosentry/__init__.py`
+  that drifted from `pyproject.toml` after the 0.7.2 release — the
+  wheel was 0.7.2 on PyPI but the banner still said `v0.7.1`. The
+  constant is now resolved at import time via
+  `importlib.metadata.version("autosentry")`, with a sentinel fallback
+  for source-tree imports without an installed dist. Single source of
+  truth = `pyproject.toml`.
+- **Sync stale "self-healing sentry" taglines to "self-healing
+  supervisor"** across the CLI banner, Typer `--help` text, package
+  docstrings, and the README hero. The 0.7.2 PyPI-summary rewrite
+  didn't propagate to the in-repo duplicates.
+
 ## [0.7.2] — 2026-05-26
 
 ### Changed

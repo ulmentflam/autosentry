@@ -26,7 +26,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     help=(
-        "Self-healing sentry for long-running processes.\n\n"
+        "Self-healing supervisor for long-running processes.\n\n"
         "autosentry supervises a command, watches its log stream for known "
         "failure modes and anomalies, applies deterministic YAML rules when "
         "it can, and escalates to a Claude Code subagent when it can't. "
@@ -52,7 +52,7 @@ def _main(
         is_eager=True,
     ),
 ) -> None:
-    """autosentry — self-healing sentry for long-running processes."""
+    """autosentry — self-healing supervisor for long-running processes."""
 
 
 def _register_commands() -> None:

@@ -2,7 +2,7 @@
 
 # autosentry
 
-**Self-healing sentry for long-running processes.**
+**Self-healing supervisor for long-running processes.**
 
 Watch a command, catch the failure, fix it, leave a paper trail.
 

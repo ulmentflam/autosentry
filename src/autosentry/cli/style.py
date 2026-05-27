@@ -91,7 +91,7 @@ _BANNER_ASCII = r"""
 
 
 def banner(
-    version: str, *, tagline: str = "self-healing sentry for long-running processes"
+    version: str, *, tagline: str = "self-healing supervisor for long-running processes"
 ) -> Text:
     """A small rich-rendered hero suitable for ``--version`` / ``init``."""
     text = Text()
