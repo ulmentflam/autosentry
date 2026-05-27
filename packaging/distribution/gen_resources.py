@@ -16,6 +16,7 @@ Emits resource blocks to stdout, sorted alphabetically (matches brew style).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import urllib.request
@@ -86,8 +87,13 @@ def main() -> None:
     blocks: list[tuple[str, str]] = []
     for name, version in resolved:
         canonical, url, sha = sdist(name, version)
-        block = f'  resource "{canonical}" do\n    url "{url}"\n    sha256 "{sha}"\n  end'
-        blocks.append((canonical.lower(), block))
+        # Normalize the resource name to its PEP 503 form (lowercase, runs of
+        # [-_.] collapsed to a single "-"). brew audit requires the `resource`
+        # name to match the normalized PyPI name, e.g. "ruamel.yaml" ->
+        # "ruamel-yaml", "Pygments" -> "pygments". URL/sha256 are unaffected.
+        res_name = re.sub(r"[-_.]+", "-", canonical).lower()
+        block = f'  resource "{res_name}" do\n    url "{url}"\n    sha256 "{sha}"\n  end'
+        blocks.append((res_name, block))
 
     for _, block in sorted(blocks):
         print(block)
