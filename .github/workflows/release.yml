@@ -60,3 +60,114 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+
+  # Cut a GitHub release with the built artifacts attached. Beta / RC tags
+  # (e.g. v0.8.0b1, v0.8.0rc1) are flagged as prereleases. Runs after PyPI so
+  # a failed upload aborts before a release is published.
+  github-release:
+    name: GitHub release
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
+
+  # Sync the Homebrew formula into ulmentflam/homebrew-tap so that
+  # `brew install ulmentflam/tap/autosentry` always resolves to the latest
+  # release. The in-repo scaffold (packaging/distribution/autosentry.rb) carries
+  # the pinned Python `resource` blocks; this job only rewrites the top-level
+  # `url` + `sha256` from the freshly-tagged source tarball.
+  #
+  # If the bump fails (missing secret, network blip, tap-side conflict) the
+  # PyPI upload + GitHub release are already done — `continue-on-error` keeps
+  # the run green and the maintainer can re-run this job in isolation or fall
+  # back to the manual recipe in CONTRIBUTING.md §Releasing → "Homebrew tap".
+  #
+  # One-time setup:
+  #   1. Create a fine-grained PAT at
+  #      https://github.com/settings/personal-access-tokens/new with:
+  #        Resource owner    : ulmentflam
+  #        Repository access : Only select repositories → homebrew-tap
+  #        Permissions       : Repository → Contents: Read and write
+  #   2. Store it as a repo secret on ulmentflam/autosentry:
+  #        gh secret set HOMEBREW_TAP_TOKEN < token.txt
+  brew-bump:
+    name: Bump Homebrew tap formula
+    needs: github-release
+    runs-on: ubuntu-latest
+    continue-on-error: true # release is already published; keep the run green
+    steps:
+      - name: Checkout autosentry (formula scaffold)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+          path: autosentry
+          persist-credentials: false # read-only; never push back to this repo
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v5
+        with:
+          repository: ulmentflam/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          persist-credentials: false # keep the PAT out of .git/config; push auths explicitly below
+
+      - name: Compute source tarball sha256
+        id: meta
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(curl -sSL --fail "$URL" | sha256sum | awk '{print $1}')
+          {
+            echo "tag=${TAG}"
+            echo "url=${URL}"
+            echo "sha256=${SHA}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved ${TAG} → sha256=${SHA}"
+
+      - name: Render formula into the tap
+        run: |
+          set -euo pipefail
+          mkdir -p homebrew-tap/Formula
+          cp autosentry/packaging/distribution/autosentry.rb \
+             homebrew-tap/Formula/autosentry.rb
+          # Rewrite only the top-level url + sha256 (2-space indent). The
+          # resource blocks are 4-space indented, so this anchored sed leaves
+          # the pinned dependency hashes untouched.
+          sed -i -E \
+            -e "s|^(  url )\"[^\"]+\"|\\1\"${{ steps.meta.outputs.url }}\"|" \
+            -e "s|^(  sha256 )\"[a-f0-9]+\"|\\1\"${{ steps.meta.outputs.sha256 }}\"|" \
+            homebrew-tap/Formula/autosentry.rb
+
+      - name: Commit and push
+        working-directory: homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "autosentry release bot"
+          git config user.email "ulmentflam@users.noreply.github.com"
+          git add Formula/autosentry.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date for ${{ steps.meta.outputs.tag }}; nothing to push."
+            exit 0
+          fi
+          git commit -m "autosentry ${{ steps.meta.outputs.tag }}"
+          # persist-credentials:false kept the token out of .git/config, so
+          # authenticate this single push explicitly. The secret is masked in
+          # Actions logs and the URL is never written back to config.
+          git push "https://x-access-token:${TAP_TOKEN}@github.com/ulmentflam/homebrew-tap.git" HEAD:main
