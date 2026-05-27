@@ -32,7 +32,10 @@ class Detector(ABC):
     def __init__(self, name: str, cooldown_seconds: int = 60) -> None:
         self.name = name
         self.cooldown_seconds = cooldown_seconds
-        self._last_fired_at: float = 0.0
+        # `-inf` so a never-fired detector is never on cooldown, regardless
+        # of the absolute value of `time.monotonic()` (which is boot-relative
+        # and can be smaller than `cooldown_seconds` on fresh CI runners).
+        self._last_fired_at: float = float("-inf")
 
     def _on_cooldown(self) -> bool:
         return (time.monotonic() - self._last_fired_at) < self.cooldown_seconds

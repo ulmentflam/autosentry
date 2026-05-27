@@ -9,6 +9,7 @@ results.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from textwrap import dedent
 from unittest.mock import patch
@@ -17,6 +18,15 @@ import pytest
 from typer.testing import CliRunner
 
 from autosentry.cli import app
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(s: str) -> str:
+    """Strip ANSI SGR codes. CI sets FORCE_COLOR=1 which makes Rich emit
+    colors even when stdout is piped through CliRunner; substring checks
+    against styled output need to compare against the de-styled text."""
+    return _ANSI_RE.sub("", s)
 
 
 @pytest.fixture
@@ -198,7 +208,7 @@ def test_init_install_skills_local_drops_files(runner: CliRunner, isolated_cwd: 
     assert result.exit_code == 0
     assert (isolated_cwd / ".claude" / "commands" / "autosentry.md").is_file()
     assert (isolated_cwd / "AGENTS.md").is_file()
-    assert "/autosentry skill installed at scope=local" in result.stdout
+    assert "/autosentry skill installed at scope=local" in _plain(result.stdout)
 
 
 def test_init_install_skills_none_default_in_non_interactive(runner: CliRunner, isolated_cwd: Path):
