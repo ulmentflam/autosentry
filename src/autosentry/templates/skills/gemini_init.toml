@@ -1,0 +1,37 @@
+# Gemini CLI / Antigravity custom command — /autosentry-init
+
+description = "Set up autosentry in the current repo — install, scaffold autosentry.yaml, propose detectors and rules for the stack."
+
+prompt = """
+Onboard the current repo to autosentry. Confirm before destructive
+actions; one sentence per step.
+
+1. `command -v autosentry` → if missing:
+   `curl -fsSL https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.sh | sh`
+   Ask the user before running.
+
+2. `[ -f autosentry.yaml ]` → if missing:
+   `autosentry init --non-interactive`
+   → if present:
+   `autosentry init --upgrade`
+
+3. Read the repo (pyproject.toml / package.json / Cargo.toml / go.mod
+   / Makefile / scripts/) and propose `process.command`. **Ask before
+   editing autosentry.yaml.**
+
+4. Propose `config_snapshots` — only files that exist.
+
+5. Propose detectors + rules for the stack:
+   - ML/Python: oom, nccl, traceback, stall with `step (\\\\d+)` regex
+   - Service: 5xx patterns, connection-refused, traceback
+   - ETL: stage markers, no-output stall
+
+6. `autosentry skills install --tool agents` so AGENTS.md lands.
+   `--scope global` if the user wants every repo to inherit.
+
+7. `autosentry doctor` — fix red, summarize yellow.
+
+8. Hand off `nohup autosentry run > /dev/null 2>&1 &`. Don't run it.
+
+The full operator playbook is in `/autosentry` (not this skill).
+"""

@@ -1,0 +1,53 @@
+"""Detector protocol + shared types."""
+
+from __future__ import annotations
+
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Literal
+
+from autosentry.supervisors.base import LogLine, ProcessStatus
+
+DetectionKind = Literal["error", "anomaly"]
+
+
+@dataclass
+class Detection:
+    detector: str
+    kind: DetectionKind
+    message: str
+    # Raw log context: lines leading up to (and including) the triggering line.
+    log_context: list[str] = field(default_factory=list)
+    # Stack trace as a single block if available (set by TracebackDetector).
+    trace: str | None = None
+    # Detector-specific metadata (e.g. stall info, regex group captures).
+    meta: dict[str, str] = field(default_factory=dict)
+
+
+class Detector(ABC):
+    name: str
+    cooldown_seconds: int
+
+    def __init__(self, name: str, cooldown_seconds: int = 60) -> None:
+        self.name = name
+        self.cooldown_seconds = cooldown_seconds
+        self._last_fired_at: float = 0.0
+
+    def _on_cooldown(self) -> bool:
+        return (time.monotonic() - self._last_fired_at) < self.cooldown_seconds
+
+    def _mark_fired(self) -> None:
+        self._last_fired_at = time.monotonic()
+
+    @abstractmethod
+    def observe_line(self, line: LogLine) -> Detection | None:
+        """Called for each log line. Return a Detection or None."""
+
+    def observe_status(self, status: ProcessStatus) -> Detection | None:
+        """Called on each monitor tick with current process status."""
+        return None
+
+    def observe_tick(self) -> Detection | None:
+        """Called once per tick regardless of log activity (for time-based checks)."""
+        return None

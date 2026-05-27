@@ -1,0 +1,168 @@
+# autosentry — supervised process configuration.
+#
+# This file is heavily commented to serve as documentation. Trim it down
+# to the keys you actually need; everything below has a working default.
+
+process:
+  # What kind of runtime to supervise.
+  #   local  — subprocess (start with this)
+  #   slurm  — sbatch/squeue (Phase 2)
+  #   docker — `docker run` / attach (Phase 2)
+  #   attach — point at an existing PID + log (Phase 2)
+  kind: local
+
+  # The command to run. Use a list, not a shell string — autosentry does not
+  # interpret shell metacharacters.
+  command: ["python", "your_script.py"]
+
+  # Working directory, relative to this config file.
+  cwd: "."
+
+  # Environment variables to set on the child process. Values can interpolate
+  # the surrounding environment with `$VAR` or `${VAR}`.
+  env: {}
+  #   CUDA_VISIBLE_DEVICES: "0"
+  #   BATCH_SIZE: "8"
+
+  restart_policy:
+    max_restarts: 10
+    backoff: exponential          # fixed | exponential
+    cooldown_seconds: 60
+
+monitor:
+  # Cadence for status checks and tick-driven detectors (stall, etc.). The log
+  # stream itself is processed line-by-line as fast as the process emits.
+  poll_interval_seconds: 30
+  # Default stall threshold; overridden per-detector below.
+  stall_timeout_seconds: 1800
+  log_dir: ".autosentry/logs"
+  log_tail_lines: 2000
+  log_excerpt_lines: 200          # how many lines per incident's log_excerpt.txt
+
+# Files snapshotted into every incident folder. Paths are relative to this
+# config file. Anything you want to be able to inspect later when something
+# goes wrong belongs here.
+config_snapshots:
+  - configs/run.yaml
+  - .env
+
+# Source-explode controls. tree-sitter is used to find the enclosing function
+# / class for each stack frame; falls back to ±context_lines raw source.
+source_explode:
+  enabled: true
+  context_lines: 10
+  languages: [python, javascript, typescript, go, rust, java]
+  skip_paths:
+    - site-packages/
+    - .venv/
+    - node_modules/
+    - /usr/lib/
+  max_frames: 20
+
+# Detectors. Each one watches the log stream and / or process status and emits
+# detections. Order doesn't matter — they all run in parallel.
+detectors:
+  # Match known error keywords.
+  - kind: pattern
+    name: oom
+    regex: "(OutOfMemoryError|CUDA out of memory|killed.*OOM)"
+  - kind: pattern
+    name: nccl
+    regex: "NCCL.*(error|timeout)"
+  - kind: pattern
+    name: connection_reset
+    regex: "(ConnectionResetError|EHOSTUNREACH|Connection refused)"
+
+  # Generic Python / Node / Go / Rust / Java traceback detection.
+  - kind: traceback
+
+  # No progress for too long. The `metric_regex`'s first capture is the
+  # progress value tracked across log lines. If it doesn't advance for
+  # `no_progress_seconds`, we fire an anomaly.
+  - kind: stall
+    name: training_stall
+    metric_regex: "(?:step|iter)\\s+(\\d+)"
+    no_progress_seconds: 1800
+
+  # Process exited (non-zero by default).
+  - kind: exit_code
+
+# Recovery rules. Matched in order; the first hit wins. Anything that doesn't
+# match falls through to Claude (if enabled).
+rules:
+  - name: oom_halve_batch
+    match: { detector: oom }
+    action:
+      kind: restart_with_env
+      set:
+        BATCH_SIZE: half          # halves the prior overlay (or process env)
+      notify: true
+
+  - name: transient_restart
+    match: { detector: nccl }
+    action: { kind: restart, notify: true }
+
+  - name: connection_restart
+    match: { detector: connection_reset }
+    action: { kind: restart, notify: true }
+
+  - name: stall_restart
+    match: { detector: training_stall }
+    action: { kind: restart, notify: true }
+
+healing:
+  claude:
+    # ``true`` / ``false`` / ``auto``. ``auto`` resolves at startup
+    # based on what's actually available (see ``mode`` below). Pin to
+    # ``false`` for unconditional opt-out (rule-only operation).
+    enabled: auto
+    # ``auto`` / ``subprocess`` / ``interactive``.
+    #   subprocess  — spawn ``claude --print`` (headless; needs the CLI).
+    #   interactive — write a recovery request file, block until the
+    #                 ``/autosentry`` skill running in your Claude Code
+    #                 session spawns a subagent to diagnose and
+    #                 responds via ``autosentry healer respond``.
+    #   auto        — interactive when a /autosentry skill is in this
+    #                 repo, subprocess when ``claude`` is on PATH,
+    #                 otherwise disabled (rule-only).
+    mode: auto
+    command: ["claude", "--print"]
+    timeout_seconds: 600
+    prompt_template: ".autosentry/prompts/recovery.md"
+    include_in_context:
+      - state
+      - last_incident
+      - config_snapshots
+    # File-handshake paths for interactive mode.
+    request_path: ".autosentry/recovery_request.md"
+    response_path: ".autosentry/recovery_response.md"
+    # Detector → Task-tool subagent mapping for interactive mode.
+    # ``default`` is the fallback; per-detector entries override. The
+    # healer writes the chosen spec into the request frontmatter so
+    # the skill knows which subagent_type to spawn.
+    subagents:
+      default:
+        type: general-purpose
+        description: "Diagnose an autosentry incident"
+      # training_stall:
+      #   type: Plan
+      #   description: "Diagnose a stalled training loop"
+      # oom:
+      #   type: general-purpose
+      #   description: "Resolve an out-of-memory failure"
+
+notifiers:
+  - kind: log
+
+  # Enable to queue Slack messages into a file the dispatcher drains.
+  # - kind: slack_outbox
+  #   outbox_path: .autosentry/slack_outbox.jsonl
+  #   channel: "C0A4UK987ND"
+  #   thread_key: "pipeline"
+
+  # Or POST events to a webhook:
+  # - kind: webhook
+  #   url: "https://hooks.example.com/autosentry"
+
+state_path: ".autosentry/state.json"
+incidents_dir: ".autosentry/incidents"

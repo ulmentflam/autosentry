@@ -1,0 +1,45 @@
+# Pre-commit hooks for autosentry.
+#
+# Install once per clone:
+#
+#     pip install pre-commit   # or: uv tool install pre-commit
+#     pre-commit install        # registers the hook in .git/hooks/pre-commit
+#
+# Then every `git commit` runs ruff (lint + format check) and pyrefly
+# against the staged files. The same checks `make ci` runs locally and
+# CI runs in GitHub Actions — keeping `git commit` honest avoids a
+# lot of red-PR back-and-forth.
+#
+# To run all hooks against every file once (e.g. after touching the config):
+#
+#     pre-commit run --all-files
+#
+# To skip hooks for a specific commit (use sparingly):
+#
+#     git commit --no-verify
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.14
+    hooks:
+      # Lint with autofix when safe; commits stay clean.
+      - id: ruff-check
+        args: [--fix]
+      # Enforce the project's formatting.
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # Pyrefly doesn't ship a first-party pre-commit repo yet, so we
+      # run it as a local hook using the project's dev environment.
+      # We pin python_version to satisfy pre-commit's metadata
+      # requirements; the actual interpreter comes from PATH.
+      - id: pyrefly
+        name: pyrefly check
+        entry: pyrefly check src/autosentry
+        language: system
+        types: [python]
+        pass_filenames: false
+        # Type-checks the whole project on each commit; that's still
+        # fast for autosentry's size. If pyrefly grows expensive, gate
+        # on `files: ^src/autosentry/`.

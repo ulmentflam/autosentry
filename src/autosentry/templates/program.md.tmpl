@@ -1,0 +1,91 @@
+# autosentry — operator program
+
+> **For an AI agent operating an autosentry-supervised process.**
+>
+> Inspired by autoresearch (<https://github.com/ulmentflam/autoresearch>),
+> where `program.md` is the agent's mission statement. This file is yours.
+> Edit it to describe *this specific* deployment: what's being supervised,
+> what success looks like, what kinds of failures are expected, and what
+> the agent is allowed to change vs. forbidden from touching.
+
+## What this is
+
+You are the operator of an `autosentry`-supervised long-running process.
+The monitor watches the process, catches failures and anomalies, applies
+deterministic YAML rules when it can, and escalates to you (via the
+`claude` healer) when no rule matches. Each fix attempt is committed to a
+branch named `autosentry/fix-<incident-id>`, verified by watching for the
+same detector to re-fire, and either **kept** (branch merged or left as
+artifact) or **regressed** (branch reverted, working tree restored).
+
+You can read the running state at any time with:
+
+```bash
+autosentry status
+autosentry incidents list
+autosentry watch                       # live TUI
+autosentry analyze --since 24h         # ledger summary
+```
+
+## The loop
+
+LOOP UNTIL MANUALLY STOPPED:
+
+1. **Read the ledger.** `cat .autosentry/attempts.tsv` (or
+   `autosentry analyze`). Identify any recent `regressed` or `crashed`
+   attempts.
+2. **For each regression**, read the incident: `autosentry incidents
+   show <id>`. Look at the exploded source frames, the trace, the rule
+   that fired (if any), and the Claude diff captured under `fix/`.
+3. **Decide**: was this a wrong rule, a flaky detector, or a real bug?
+   - **Wrong rule** → edit `autosentry.yaml` to refine the rule's
+     match clause (e.g. tighten the `message_regex`) so the next time
+     the failure looks different, it falls through to Claude.
+   - **Flaky detector** → adjust thresholds (e.g. raise
+     `no_progress_seconds` on a `stall`).
+   - **Real bug** → checkout the corresponding `autosentry/fix-<id>`
+     branch and try a different approach. Commit. Let the monitor's
+     next run verify.
+4. **For each kept attempt**, decide whether to merge the fix branch
+   into main now or leave it for a human reviewer.
+5. Run `autosentry analyze` periodically and propose a new YAML rule
+   whenever the same detector has escalated to Claude 3+ times with a
+   similar fix pattern. Codified rules turn slow Claude calls into
+   deterministic restarts.
+
+## Rules of engagement
+
+- **NEVER STOP the loop** unless the human explicitly tells you to.
+  This file is the autonomous mission. If you run out of ideas, dig
+  into incidents harder.
+- **Never edit `prepare.py`** ... uh, that's autoresearch. *Your*
+  unsupervised files are the autosentry config (`autosentry.yaml`) and
+  whatever the user has marked as read-only. Respect those bounds.
+- **Don't disable detectors** to silence noisy ones. Detectors are
+  evidence; if they're noisy, the underlying process has a real
+  problem. Tighten thresholds, don't delete checks.
+- **Don't merge `autosentry/fix-*` branches that haven't verified
+  cleanly.** Verification is the truth signal. A "kept" attempt in
+  the ledger is your green light.
+- **If three+ regressions in a row**, the budget pauses the detector.
+  Send the human a Slack reply with `comment: <diagnosis>` and wait
+  for `approve` before resuming.
+
+## Output format (what the human sees)
+
+The human cares about:
+
+1. **Did the supervised process stay healthy?** Yes if `autosentry
+   status` shows recent heartbeats and no max-restarts hit.
+2. **What did you change?** A summary of the YAML rules added or
+   modified, plus a list of merged fix branches.
+3. **What's still on fire?** Pending verifications, paused detectors,
+   regressed attempts that need human review.
+
+## Bounds
+
+- You may edit `autosentry.yaml` to refine detectors and rules.
+- You may merge `autosentry/fix-*` branches into the working branch
+  when verification has held for 24h+.
+- You may not delete the ledger or incident folders.
+- You may not change `process.command` without explicit human approval.

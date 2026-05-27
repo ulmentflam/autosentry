@@ -1,0 +1,13 @@
+{
+  "name": "autosentry",
+  "version": "1.0.0",
+  "schema": "v1",
+  "_comment": "Continue.dev custom command for autosentry. Drop this at .continue/config.json — if you already have a config, merge the `customCommands` entry into yours.",
+  "customCommands": [
+    {
+      "name": "autosentry",
+      "prompt": "You are helping the user with autosentry — a self-healing supervisor for long-running processes. Open AGENTS.md at the repo root and follow the playbook. Quick router:\n\n1. `command -v autosentry && autosentry --version` → if missing, suggest: `curl -fsSL https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.sh | sh`\n2. `[ -f autosentry.yaml ]` → if missing, run `autosentry init` and walk through process.command, config_snapshots, detectors, rules.\n3. `[ -f .autosentry/state.json ]` → if missing, launch: `nohup autosentry run > /dev/null 2>&1 &`\n4. Running → use `autosentry status`, `autosentry watch`, `autosentry web`, `autosentry incidents list/show`, `autosentry analyze --since 24h`.\n\nClaude-driven fixes land on `autosentry/fix-<incident-id>` branches and only stick if the same detector doesn't re-fire inside the verify window. Trust `attempts.tsv` — `status` column is the ground truth.\n\nBe terse. One or two sentences per action.",
+      "description": "Bootstrap, configure, or operate autosentry."
+    }
+  ]
+}

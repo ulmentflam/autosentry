@@ -1,0 +1,14 @@
+# Aider configuration — wire AGENTS.md in as ambient context.
+#
+# Aider reads `.aider.conf.yml` from the cwd. The `read:` key adds files
+# to every chat session as read-only context, so the autosentry playbook
+# in AGENTS.md is always available to the model without the user having
+# to /add it each time.
+#
+# Drop a `.aider/CONVENTIONS.md` next to this file for project-specific
+# conventions (Aider auto-detects that path).
+#
+# https://aider.chat/docs/config/aider_conf.html
+
+read:
+  - AGENTS.md

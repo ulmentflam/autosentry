@@ -1,0 +1,273 @@
+"""Config schema for ``autosentry.yaml``.
+
+The YAML is validated through pydantic models. ``load_config`` resolves
+relative paths against the config file's directory and interpolates
+``$ENV_VAR`` references in ``process.command``, ``process.env``, and
+the healer command.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Annotated, Any, Literal, cast
+
+from pydantic import BaseModel, Field, field_validator
+from ruamel.yaml import YAML
+
+ProcessKind = Literal["local", "slurm", "docker", "attach"]
+
+
+class RestartPolicy(BaseModel):
+    # Default 10: enough headroom for the healer to land several
+    # recoveries before giving up. The agentic flow is the main fix
+    # path — rules get two cheap shots, then Claude takes over (see
+    # `escalate_to_claude_after`, default `max_restarts // 5` = 2).
+    max_restarts: int = 10
+    backoff: Literal["fixed", "exponential"] = "exponential"
+    cooldown_seconds: int = 60
+
+
+class ProcessConfig(BaseModel):
+    kind: ProcessKind = "local"
+    command: list[str] = Field(default_factory=list)
+    cwd: str = "."
+    env: dict[str, str] = Field(default_factory=dict)
+    restart_policy: RestartPolicy = Field(default_factory=RestartPolicy)
+    # Kind-specific extras live here so we don't need a discriminated union yet.
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("extra", "env", mode="before")
+    @classmethod
+    def _coerce_none_to_empty(cls, v):
+        # YAML keys present but empty parse as None (e.g. `extra:` with no
+        # children). Treat that as an empty dict so the schema stays tolerant.
+        return {} if v is None else v
+
+
+class MonitorConfig(BaseModel):
+    poll_interval_seconds: int = 30
+    stall_timeout_seconds: int = 1800
+    log_dir: str = ".autosentry/logs"
+    log_tail_lines: int = 2000
+    log_excerpt_lines: int = 200  # how much to capture into each incident
+
+
+class SourceExplodeConfig(BaseModel):
+    enabled: bool = True
+    context_lines: int = 10
+    languages: list[str] = Field(
+        default_factory=lambda: ["python", "javascript", "typescript", "go", "rust"]
+    )
+    skip_paths: list[str] = Field(
+        default_factory=lambda: ["site-packages/", ".venv/", "node_modules/", "/usr/lib/"]
+    )
+    max_frames: int = 20
+
+
+class DetectorSpec(BaseModel):
+    kind: Literal["pattern", "traceback", "stall", "exit_code"]
+    name: str | None = None
+    # pattern detector
+    regex: str | None = None
+    # stall detector
+    metric_regex: str | None = None
+    no_progress_seconds: int | None = None
+    # exit detector
+    nonzero_only: bool = True
+    # common
+    cooldown_seconds: int = 60
+
+    @field_validator("regex")
+    @classmethod
+    def _compile_regex(cls, v: str | None) -> str | None:
+        if v is not None:
+            re.compile(v)
+        return v
+
+
+class RuleMatch(BaseModel):
+    detector: str
+    message_regex: str | None = None
+
+    @field_validator("message_regex")
+    @classmethod
+    def _compile_regex(cls, v: str | None) -> str | None:
+        if v is not None:
+            re.compile(v)
+        return v
+
+
+class RuleAction(BaseModel):
+    kind: Literal["restart", "restart_with_env", "pause", "abort", "custom_command"]
+    set: dict[str, str] = Field(default_factory=dict)  # for restart_with_env
+    command: list[str] = Field(default_factory=list)  # for custom_command
+    notify: bool = True
+
+
+class Rule(BaseModel):
+    name: str | None = None
+    match: RuleMatch
+    action: RuleAction
+
+
+class SubagentSpec(BaseModel):
+    """One subagent type the interactive healer can spawn.
+
+    Maps a detector name (or ``default``) to a Claude Code Task-tool
+    subagent type. The healer writes the chosen spec into the
+    ``recovery_request.md`` frontmatter; the ``/autosentry`` skill
+    running in the user's Claude session reads it and spawns the
+    matching subagent via the Task tool.
+    """
+
+    type: str = "general-purpose"
+    description: str = "Diagnose an autosentry incident"
+
+
+class ClaudeConfig(BaseModel):
+    # ``True | False | "auto"``. ``auto`` resolves based on whether the
+    # ``/autosentry`` skill is installed AND/OR ``claude`` is on PATH —
+    # see ``ClaudeHealer._resolve_mode``.
+    enabled: bool | Literal["auto"] = "auto"
+    # ``auto | subprocess | interactive``. ``auto`` picks ``interactive`` when
+    # the skill is installed in the repo, ``subprocess`` when only ``claude``
+    # is on PATH, and ``disabled`` (no-op) when neither is available.
+    mode: Literal["auto", "subprocess", "interactive"] = "auto"
+    command: list[str] = Field(default_factory=lambda: ["claude", "--print"])
+    timeout_seconds: int = 600
+    prompt_template: str = ".autosentry/prompts/recovery.md"
+    include_in_context: list[Literal["state", "last_incident", "config_snapshots"]] = Field(
+        default_factory=lambda: cast(
+            list[Literal["state", "last_incident", "config_snapshots"]],
+            ["state", "last_incident", "config_snapshots"],
+        )
+    )
+    # Interactive-mode file handshake. The healer writes ``request_path``
+    # and blocks on ``response_path``'s mtime.
+    request_path: str = ".autosentry/recovery_request.md"
+    response_path: str = ".autosentry/recovery_response.md"
+    # Detector → subagent mapping. ``default`` is the fallback when a
+    # detector has no explicit entry. Empty dict → use a built-in default.
+    subagents: dict[str, SubagentSpec] = Field(default_factory=dict)
+
+
+class GitConfig(BaseModel):
+    """How autosentry uses git to isolate fix attempts.
+
+    Inspired by autoresearch (https://github.com/ulmentflam/autoresearch):
+    each Claude-driven fix attempt lands on its own branch. If the fix
+    verifies (the failure doesn't re-fire within ``verify_window_seconds``),
+    the branch can be fast-forwarded into ``main``. If the fix regresses,
+    the branch stays as a forensic artifact and the working tree is
+    restored.
+    """
+
+    enabled: bool = True
+    branch_prefix: str = "autosentry/fix-"
+    # When true and the fix verifies cleanly, fast-forward main and delete
+    # the branch. When false (the safe default), the branch is left for the
+    # operator to merge by hand.
+    auto_merge: bool = False
+    # When false, never write to disk; only log the diff. Useful for
+    # non-git repos or read-only environments.
+    write_enabled: bool = True
+
+
+class HealerBudget(BaseModel):
+    """Per-detector and per-incident bounds on fix attempts.
+
+    Anti-thrash. If a detector keeps firing and every fix attempt
+    regresses, autosentry stops trying and just writes incidents +
+    notifies, until a manual ``approve`` lands in the slack inbox or
+    the rolling window passes.
+    """
+
+    max_attempts_per_detector_per_hour: int = 5
+    max_wall_seconds_per_incident: int = 600
+
+
+class HealingConfig(BaseModel):
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    git: GitConfig = Field(default_factory=GitConfig)
+    budget: HealerBudget = Field(default_factory=HealerBudget)
+    # After applying a fix, watch for ``verify_window_seconds`` for the
+    # same detector to re-fire. If it does, the fix is a regression.
+    verify_window_seconds: int = 600
+    # What to do when a fix regresses.
+    regression_action: Literal["revert", "escalate", "ignore"] = "revert"
+    # When ``state.restarts`` reaches this threshold, the next detection
+    # SKIPS the YAML rule healer and goes directly to Claude — the
+    # agentic flow is the main fix path, rules are the cheap fast
+    # lane for known transients. ``None`` →
+    # ``max(1, process.restart_policy.max_restarts // 5)`` (resolved
+    # at runtime; default = 2 unverified restarts).
+    escalate_to_claude_after: int | None = None
+    # If a rule-based fix regresses (same detector re-fires inside the
+    # verify window), force Claude on the *next* attempt regardless of
+    # the restart counter. Rules failed; bring in the agent. Set False
+    # to keep cycling through rule attempts (not recommended).
+    escalate_on_rule_regression: bool = True
+
+
+class NotifierSpec(BaseModel):
+    kind: Literal["log", "slack_outbox", "discord_outbox", "webhook"]
+    # *_outbox: outbox file destination + chat identifiers
+    outbox_path: str = ".autosentry/slack_outbox.jsonl"
+    channel: str | None = None
+    thread_key: str | None = None
+    # webhook
+    url: str | None = None
+
+
+class AutoSentryConfig(BaseModel):
+    process: ProcessConfig
+    monitor: MonitorConfig = Field(default_factory=MonitorConfig)
+    config_snapshots: list[str] = Field(default_factory=list)
+    source_explode: SourceExplodeConfig = Field(default_factory=SourceExplodeConfig)
+    detectors: list[DetectorSpec] = Field(default_factory=list)
+    rules: list[Rule] = Field(default_factory=list)
+    healing: HealingConfig = Field(default_factory=HealingConfig)
+    notifiers: list[NotifierSpec] = Field(default_factory=lambda: [NotifierSpec(kind="log")])
+    state_path: str = ".autosentry/state.json"
+    incidents_dir: str = ".autosentry/incidents"
+
+    # Path the config was loaded from, set by ``load_config``. Not in YAML.
+    config_path: Annotated[Path | None, Field(exclude=True)] = None
+
+    def resolve(self, rel: str | Path) -> Path:
+        """Resolve a path relative to the config file's directory."""
+        p = Path(rel)
+        if p.is_absolute():
+            return p
+        base = self.config_path.parent if self.config_path else Path.cwd()
+        return (base / p).resolve()
+
+
+_ENV_REF = re.compile(r"\$\{?([A-Z_][A-Z0-9_]*)\}?")
+
+
+def _interpolate_env(value: Any) -> Any:
+    if isinstance(value, str):
+        return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), m.group(0)), value)
+    if isinstance(value, list):
+        return [_interpolate_env(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _interpolate_env(v) for k, v in value.items()}
+    return value
+
+
+def load_config(path: str | Path) -> AutoSentryConfig:
+    """Load and validate ``autosentry.yaml`` from disk."""
+    path = Path(path).resolve()
+    if not path.exists():
+        msg = f"config not found: {path}"
+        raise FileNotFoundError(msg)
+    yaml = YAML(typ="safe")
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.load(f) or {}
+    data = _interpolate_env(data)
+    cfg = AutoSentryConfig.model_validate(data)
+    cfg.config_path = path
+    return cfg
