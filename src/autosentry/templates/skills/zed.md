@@ -19,6 +19,10 @@ root for the complete playbook. Quick router:
 4. Running? Use `autosentry status`, `autosentry watch`,
    `autosentry web`, `autosentry incidents list/show`,
    `autosentry analyze --since 24h`.
+5. `autosentry update --check` (cached daily) → if it prints
+   `→ update available`, mention it once and recommend the command it
+   shows (`autosentry update`, or `brew upgrade autosentry` for
+   Homebrew). Don't upgrade unprompted.
 
 Claude-driven fixes land on `autosentry/fix-<incident-id>` branches
 and only stick if the same detector doesn't re-fire inside the

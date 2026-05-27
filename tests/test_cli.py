@@ -267,3 +267,43 @@ def test_banner_includes_version():
     text = banner("9.9.9")
     rendered = str(text)
     assert "9.9.9" in rendered
+
+
+def _stub_check(monkeypatch, *, current: str, latest: str, is_outdated: bool):
+    from autosentry.updater import UpdateCheck
+
+    def fake(**_kwargs):
+        return UpdateCheck(current=current, latest=latest, is_outdated=is_outdated)
+
+    monkeypatch.setattr("autosentry.cli.commands.update.updater_check", fake)
+
+
+def test_update_check_outdated_recommends_command(runner: CliRunner, monkeypatch):
+    _stub_check(monkeypatch, current="0.1.0", latest="0.2.0", is_outdated=True)
+    result = runner.invoke(app, ["update", "--check"])
+    assert result.exit_code == 0  # exits 0 so agent triage chains don't abort
+    out = _plain(result.output)
+    assert "0.2.0" in out
+    assert "autosentry update" in out  # recommends the upgrade command
+
+
+def test_update_check_up_to_date_is_quiet(runner: CliRunner, monkeypatch):
+    _stub_check(monkeypatch, current="0.2.0", latest="0.2.0", is_outdated=False)
+    result = runner.invoke(app, ["update", "--check"])
+    assert result.exit_code == 0
+    out = _plain(result.output)
+    assert "up to date" in out
+    assert "update available" not in out
+
+
+def test_update_json_is_machine_readable(runner: CliRunner, monkeypatch):
+    import json
+
+    _stub_check(monkeypatch, current="0.1.0", latest="0.2.0", is_outdated=True)
+    result = runner.invoke(app, ["update", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "current": "0.1.0",
+        "latest": "0.2.0",
+        "is_outdated": True,
+    }

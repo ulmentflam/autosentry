@@ -32,6 +32,10 @@ at the repo root — load and follow it. Quick router:
    - `autosentry web` — incident browser
    - `autosentry incidents list` / `show <id>`
    - `autosentry analyze --since 24h` — ledger summary
+   - `autosentry update --check` — cached daily; if it prints
+     `→ update available`, mention it once and recommend the command it
+     shows (`autosentry update`, or `brew upgrade autosentry` for
+     Homebrew). Don't upgrade unprompted.
 
 Claude-driven fixes land on `autosentry/fix-<incident-id>` branches
 and only stick if the same detector doesn't re-fire inside the verify

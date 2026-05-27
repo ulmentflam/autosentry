@@ -34,12 +34,22 @@ command -v autosentry >/dev/null && autosentry --version       # phase ≥ 1
 [ -f .autosentry/state.json ] && cat .autosentry/state.json    # phase ≥ 3
 # phase 4 = phase 3 + the pid in state.json is alive
 ls -la .autosentry/recovery_request.md 2>/dev/null              # phase 5?
+autosentry update --check                                       # newer release?
 ```
 
 **Phase 5 is the highest-priority.** When the monitor escalates a
 detection in interactive mode it writes
 `.autosentry/recovery_request.md` and blocks waiting for
 `.autosentry/recovery_response.md`. Handle that *before* anything else.
+
+**Staying current.** `autosentry update --check` compares the installed
+version against PyPI (cached for a day, so it's cheap to run every time)
+and exits 0 either way. If it reports `→ update available`, mention it to
+the user once and recommend the exact command it prints — `autosentry
+update` for pip/uv/pipx installs, or `brew upgrade autosentry` for
+Homebrew. Don't run the upgrade yourself unless the user asks; it can
+restart the CLI mid-session. Use `--json` if you'd rather parse the
+result (`{"current","latest","is_outdated"}`).
 
 ## Phase 5 — recovery request open
 
