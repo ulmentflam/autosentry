@@ -115,3 +115,13 @@ def test_check_treats_corrupt_cache_as_miss(tmp_path, monkeypatch):
     cache.write_text("{ not json", encoding="utf-8")
     monkeypatch.setattr(updater, "fetch_latest_version", _counting_fetch([]))
     assert check().latest == "9.9.9"
+
+
+def test_check_treats_non_dict_cache_as_miss(tmp_path, monkeypatch):
+    # Valid JSON of the wrong shape ([] / "x") must miss, not crash check().
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    cache = tmp_path / "autosentry" / "update-check.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(updater, "fetch_latest_version", _counting_fetch([]))
+    assert check().latest == "9.9.9"

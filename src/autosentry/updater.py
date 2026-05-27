@@ -132,6 +132,8 @@ def _read_cache(*, allow_pre: bool, ttl: int) -> str | None:
         data = json.loads(_cache_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict):  # valid JSON but wrong shape (e.g. []) → miss
+        return None
     latest = data.get("latest")
     checked_at = data.get("checked_at")
     if data.get("allow_pre") != allow_pre or not isinstance(latest, str):
