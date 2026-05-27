@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-05-27
+
 ### Added — agent-driven update detection
 
 - **`autosentry update --check` now caches the PyPI lookup** for a day
@@ -40,6 +42,20 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   novel bugs" caveat is replaced with the structural safeguards that
   back the agent path — fix branches, outcome verification, attempts
   ledger.
+
+### Fixed
+
+- **Interactive `autosentry init` no longer loses your input on a
+  terminal left in raw / no-echo mode.** When a prior program (a crashed
+  TUI, an interrupted pager, a dropped `ssh`) exits without restoring its
+  termios, the next prompt inherited the broken state: typed characters
+  weren't echoed (input appeared lost), backspace did nothing, and the
+  line never reached the program — so `init` silently fell back to the
+  suggested default instead of the command you typed. `ask()`/`confirm()`
+  now load `readline` and additively repair the terminal to a sane cooked
+  mode (`ICANON`/`ECHO`/`ECHOE`/…) before prompting. Best-effort and
+  POSIX-only; a no-op on Windows and non-TTYs, and it never clears
+  unrelated termios bits.
 
 ## [0.7.3] — 2026-05-27
 
@@ -586,7 +602,8 @@ by watching for the same detector to re-fire, and is recorded in a flat
   macOS, ruff lint + format check, pyrefly typecheck, pytest +
   coverage). iCloud `UF_HIDDEN` workaround baked into `make install`.
 
-[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.4
 [0.7.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.1
 [0.7.0]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.0
 [0.6.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.6.1

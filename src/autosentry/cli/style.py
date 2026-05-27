@@ -124,11 +124,70 @@ def is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _sanitize_terminal_fd(fd: int) -> bool:
+    """OR sane cooked-mode flags back onto a tty ``fd``. Returns ``True`` if
+    applied.
+
+    A program that exits without restoring its termios (a crashed TUI, an
+    interrupted pager, an ``ssh`` that dropped) can leave the terminal in
+    raw / no-echo mode. The next ``input()`` then silently swallows typed
+    characters (no ECHO), ignores backspace (no ICANON erase discipline),
+    and never sees the line the user thought they typed. We additively
+    re-enable the flags a line-edited prompt needs — never clearing
+    unrelated bits, so a legitimately-customized terminal is left alone.
+    """
+    try:
+        import termios
+    except ImportError:  # Windows / no POSIX termios — nothing to repair.
+        return False
+    try:
+        iflag, oflag, cflag, lflag, ispeed, ospeed, cc = termios.tcgetattr(fd)
+    except (termios.error, OSError, ValueError):
+        return False
+    lflag |= (
+        termios.ICANON  # line-buffered input (so the kernel handles editing)
+        | termios.ECHO  # echo typed characters back to the screen
+        | termios.ECHOE  # erase the char visually on backspace
+        | termios.ECHOK  # visually kill the line on the kill char
+        | termios.ISIG  # honor Ctrl-C / Ctrl-Z again
+        | termios.IEXTEN
+    )
+    iflag |= termios.ICRNL  # map CR→NL on input so Enter submits
+    oflag |= termios.OPOST | termios.ONLCR  # post-process output (NL→CRNL)
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, [iflag, oflag, cflag, lflag, ispeed, ospeed, cc])
+    except (termios.error, OSError, ValueError):
+        return False
+    return True
+
+
+def _ensure_line_editing() -> None:
+    """Make interactive prompts robust before we hand off to ``input()``.
+
+    ``rich``'s ``Prompt`` (and Python's builtin ``input``) inherit whatever
+    state the controlling terminal is in. Two best-effort repairs, both
+    no-ops when unavailable: load ``readline`` so the prompt gets real
+    cursor/backspace/history line editing, and repair a terminal left in
+    raw / no-echo mode (otherwise typed input is silently lost and
+    backspace appears dead).
+    """
+    try:
+        import readline  # noqa: F401  — importing alone enables input() line editing
+    except ImportError:
+        pass
+    if sys.stdin.isatty():
+        try:
+            _sanitize_terminal_fd(sys.stdin.fileno())
+        except (OSError, ValueError):
+            pass
+
+
 def ask(question: str, *, default: str | None = None) -> str:
     """``rich.Prompt.ask`` with our themed console. Returns ``default`` if
     the session is non-interactive (and ``default`` is set)."""
     if not is_interactive() and default is not None:
         return default
+    _ensure_line_editing()
     return Prompt.ask(question, default=default or "", console=console)
 
 
@@ -137,6 +196,7 @@ def confirm(question: str, *, default: bool = False) -> bool:
     the session is non-interactive."""
     if not is_interactive():
         return default
+    _ensure_line_editing()
     return Confirm.ask(question, default=default, console=console)
 
 

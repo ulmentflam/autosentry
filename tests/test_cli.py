@@ -261,6 +261,48 @@ def test_is_interactive_false_for_piped_stdout():
     assert isinstance(style.is_interactive(), bool)
 
 
+@pytest.mark.skipif(not hasattr(os, "openpty"), reason="no pty support")
+def test_sanitize_terminal_repairs_raw_mode():
+    """A terminal left in raw / no-echo mode (e.g. by a crashed TUI) is the
+    root cause of "init lost my input / backspace dead / couldn't enter my
+    command". The sanitizer must re-enable canonical input + echo so the
+    next prompt behaves, without clobbering the rest of the termios state."""
+    pty = pytest.importorskip("pty")
+    termios = pytest.importorskip("termios")
+    tty = pytest.importorskip("tty")
+
+    from autosentry.cli.style import _sanitize_terminal_fd
+
+    master, slave = pty.openpty()
+    try:
+        # A prior program crashed without restoring termios → raw mode.
+        tty.setraw(slave)
+        before = termios.tcgetattr(slave)
+        assert not (before[3] & termios.ICANON)  # raw mode cleared these
+        assert not (before[3] & termios.ECHO)
+
+        assert _sanitize_terminal_fd(slave) is True
+
+        after = termios.tcgetattr(slave)
+        assert after[3] & termios.ICANON  # line editing restored
+        assert after[3] & termios.ECHO  # typed input echoes again
+        assert after[3] & termios.ECHOE  # backspace erases visibly
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_sanitize_terminal_noop_on_non_tty():
+    """On a plain pipe (not a tty) the sanitizer reports failure cleanly
+    rather than raising — interactive prompts skip it via isatty()."""
+    import tempfile
+
+    from autosentry.cli.style import _sanitize_terminal_fd
+
+    with tempfile.TemporaryFile() as f:
+        assert _sanitize_terminal_fd(f.fileno()) is False
+
+
 def test_banner_includes_version():
     from autosentry.cli.style import banner
 
