@@ -108,11 +108,12 @@ succeeds) — sync the tap by hand instead:
 ```bash
 TAG=v0.8.0
 URL="https://github.com/ulmentflam/autosentry/archive/refs/tags/${TAG}.tar.gz"
-SHA=$(curl -sSL "$URL" | sha256sum | awk '{print $1}')
+SHA=$(curl -sSL "$URL" | shasum -a 256 | awk '{print $1}')
 # In a homebrew-tap checkout:
 cp /path/to/autosentry/packaging/distribution/autosentry.rb Formula/autosentry.rb
-sed -i -E -e "s|^(  url )\"[^\"]+\"|\\1\"$URL\"|" \
-          -e "s|^(  sha256 )\"[a-f0-9]+\"|\\1\"$SHA\"|" Formula/autosentry.rb
+# macOS/BSD sed shown below; on GNU/Linux drop the '' after -i.
+sed -i '' -E -e "s|^(  url )\"[^\"]+\"|\\1\"$URL\"|" \
+             -e "s|^(  sha256 )\"[a-f0-9]+\"|\\1\"$SHA\"|" Formula/autosentry.rb
 git commit -am "autosentry ${TAG}" && git push
 ```
 

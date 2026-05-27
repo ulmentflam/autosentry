@@ -21,6 +21,7 @@ import sys
 import urllib.request
 
 PYPI = "https://pypi.org/pypi/{name}/{version}/json"
+PYPI_TIMEOUT = 30  # seconds — fail fast instead of hanging on a stalled connection
 
 
 def resolve(spec: str, python: str) -> list[tuple[str, str]]:
@@ -62,7 +63,8 @@ def resolve(spec: str, python: str) -> list[tuple[str, str]]:
 
 def sdist(name: str, version: str) -> tuple[str, str, str]:
     """Return (canonical_name, sdist_url, sha256) from PyPI for an exact version."""
-    with urllib.request.urlopen(PYPI.format(name=name, version=version)) as r:  # noqa: S310
+    endpoint = PYPI.format(name=name, version=version)
+    with urllib.request.urlopen(endpoint, timeout=PYPI_TIMEOUT) as r:  # noqa: S310
         data = json.load(r)
     canonical = data["info"]["name"]
     for f in data["urls"]:

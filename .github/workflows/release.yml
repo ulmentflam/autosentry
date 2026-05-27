@@ -115,6 +115,7 @@ jobs:
         with:
           ref: ${{ github.ref }}
           path: autosentry
+          persist-credentials: false # read-only; never push back to this repo
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v5
@@ -122,6 +123,7 @@ jobs:
           repository: ulmentflam/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
+          persist-credentials: false # keep the PAT out of .git/config; push auths explicitly below
 
       - name: Compute source tarball sha256
         id: meta
@@ -153,6 +155,8 @@ jobs:
 
       - name: Commit and push
         working-directory: homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name  "autosentry release bot"
@@ -163,4 +167,7 @@ jobs:
             exit 0
           fi
           git commit -m "autosentry ${{ steps.meta.outputs.tag }}"
-          git push
+          # persist-credentials:false kept the token out of .git/config, so
+          # authenticate this single push explicitly. The secret is masked in
+          # Actions logs and the URL is never written back to config.
+          git push "https://x-access-token:${TAP_TOKEN}@github.com/ulmentflam/homebrew-tap.git" HEAD:main
