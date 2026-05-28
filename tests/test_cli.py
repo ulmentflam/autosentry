@@ -148,7 +148,9 @@ def test_init_refuses_to_shadow_legacy_root_config(runner: CliRunner, isolated_c
     (isolated_cwd / "autosentry.yaml").write_text("process:\n  command: ['true']\n")
     result = runner.invoke(app, ["init", str(isolated_cwd), "--non-interactive"])
     assert result.exit_code == 1
-    assert "pre-0.8 layout" in result.stdout
+    # _plain(): CI sets FORCE_COLOR=1, so Rich highlights the `0.8` and the
+    # parens — strip ANSI before the substring check or it fragments.
+    assert "pre-0.8 layout" in _plain(result.stdout)
     # The legacy config is left untouched; no new one was written.
     assert (isolated_cwd / "autosentry.yaml").exists()
     assert not (isolated_cwd / ".autosentry" / "autosentry.yaml").exists()
