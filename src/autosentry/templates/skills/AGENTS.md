@@ -42,6 +42,18 @@ detection in interactive mode it writes
 `.autosentry/recovery_request.md` and blocks waiting for
 `.autosentry/recovery_response.md`. Handle that *before* anything else.
 
+**Keep the session responsive — background long-running work.** In an
+interactive session, prefer backgrounding anything long-running so the
+chat stays free while it runs:
+
+- Start the monitor with the background pattern (`nohup autosentry run >
+  /dev/null 2>&1 &`), never the blocking foreground form.
+- Spawn recovery / diagnosis subagents (Phase 5) in the background and let
+  the runtime notify you when they finish — don't tie up the chat polling
+  for the response file.
+- Reserve the foreground for steps whose output you need *immediately* to
+  decide the next action.
+
 **Staying current.** `autosentry update --check` compares the installed
 version against PyPI (cached for a day, so it's cheap to run every time)
 and exits 0 either way. If it reports `→ update available`, mention it to
@@ -58,13 +70,16 @@ When the request file is newer than the response file:
 1. Read the request. YAML frontmatter tells you the incident id, the
    detector, and the recommended subagent type.
 2. **Spawn a subagent via the Task tool** with `subagent_type` matching
-   the frontmatter's `subagent.type` (default `general-purpose`). Pass
-   the request body as the subagent's prompt, prefaced with: *"You were
-   spawned by autosentry to diagnose a recovery request. Read
+   the frontmatter's `subagent.type` (default `general-purpose`), **in the
+   background** so the chat stays free while it diagnoses. Pass the request
+   body as the subagent's prompt, prefaced with: *"You were spawned by
+   autosentry to diagnose a recovery request. Read
    `.autosentry/incidents/<incident_id>/report.md` for full context.
    When done, run `autosentry healer respond --action <kind> [--set …]
    --diagnosis "<summary>"`."*
-3. Wait for the subagent. It produces the response file itself.
+3. Let it run in the background; the runtime re-invokes you when it
+   finishes. It produces the response file itself — don't block the chat
+   polling for it.
 4. Verify `.autosentry/recovery_response.md` exists with an `ACTION:`
    line. The monitor consumes it on the next tick (~1s).
 5. Summarize for the user: detector, action, diff location.

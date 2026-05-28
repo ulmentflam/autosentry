@@ -58,6 +58,11 @@ LOOP UNTIL MANUALLY STOPPED:
 - **NEVER STOP the loop** unless the human explicitly tells you to.
   This file is the autonomous mission. If you run out of ideas, dig
   into incidents harder.
+- **Background long-running work in interactive sessions.** Run the
+  monitor with `nohup autosentry run > /dev/null 2>&1 &`, and spawn any
+  diagnosis subagents in the background so the chat stays free while they
+  run. Only keep something in the foreground when you need its output
+  immediately to decide the next step.
 - **Never edit `prepare.py`** ... uh, that's autoresearch. *Your*
   unsupervised files are the autosentry config (`.autosentry/autosentry.yaml`) and
   whatever the user has marked as read-only. Respect those bounds.

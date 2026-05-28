@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-05-27
+
+### Changed
+
+- **Agent playbooks now direct operating agents to background long-running
+  work in interactive sessions.** `AGENTS.md` and `.autosentry/program.md`
+  tell the agent to start the monitor with the `nohup` pattern and spawn
+  recovery/diagnosis subagents *in the background* — letting the runtime
+  notify on completion — so the interactive chat stays free, reserving the
+  foreground for steps whose output is needed immediately.
+
 ## [0.8.2] — 2026-05-27
 
 ### Fixed
@@ -659,7 +670,8 @@ by watching for the same detector to re-fire, and is recorded in a flat
   macOS, ruff lint + format check, pyrefly typecheck, pytest +
   coverage). iCloud `UF_HIDDEN` workaround baked into `make install`.
 
-[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.3
 [0.8.2]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.2
 [0.8.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.1
 [0.8.0]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.0
