@@ -1,9 +1,14 @@
 """Config schema for ``autosentry.yaml``.
 
 The YAML is validated through pydantic models. ``load_config`` resolves
-relative paths against the config file's directory and interpolates
-``$ENV_VAR`` references in ``process.command``, ``process.env``, and
-the healer command.
+relative paths against the *project root* — the directory that contains
+``.autosentry/`` — and interpolates ``$ENV_VAR`` references in
+``process.command``, ``process.env``, and the healer command.
+
+The config lives at ``.autosentry/autosentry.yaml`` so a single
+``.autosentry/`` entry git-ignores every autosentry file at once. A
+root-level ``autosentry.yaml`` (the pre-0.8 layout) is still honored as
+a fallback so existing repos keep working without a migration.
 """
 
 from __future__ import annotations
@@ -17,6 +22,16 @@ from pydantic import BaseModel, Field, field_validator
 from ruamel.yaml import YAML
 
 ProcessKind = Literal["local", "slurm", "docker", "attach"]
+
+#: Where ``autosentry init`` writes the config and where every command
+#: looks first. Kept inside ``.autosentry/`` so the whole tree is one
+#: git-ignorable directory.
+DEFAULT_CONFIG_PATH = Path(".autosentry/autosentry.yaml")
+
+#: Pre-0.8 location — a bare ``autosentry.yaml`` at the repo root. Still
+#: loaded as a fallback (see :func:`load_config`) for repos initialized
+#: before the move.
+LEGACY_CONFIG_PATH = Path("autosentry.yaml")
 
 
 class RestartPolicy(BaseModel):
@@ -237,12 +252,35 @@ class AutoSentryConfig(BaseModel):
     config_path: Annotated[Path | None, Field(exclude=True)] = None
 
     def resolve(self, rel: str | Path) -> Path:
-        """Resolve a path relative to the config file's directory."""
+        """Resolve a path relative to the project root.
+
+        All config paths — ``state_path``, ``incidents_dir``,
+        ``log_dir``, ``config_snapshots``, and ``resolve(".")`` for the
+        healer's repo root — are anchored on the project root, *not* the
+        config file's own directory. That way the config can sit inside
+        ``.autosentry/`` without those paths double-nesting into
+        ``.autosentry/.autosentry/`` or snapshots resolving under
+        ``.autosentry/`` instead of the repo.
+        """
         p = Path(rel)
         if p.is_absolute():
             return p
-        base = self.config_path.parent if self.config_path else Path.cwd()
-        return (base / p).resolve()
+        return (self._project_root() / p).resolve()
+
+    def _project_root(self) -> Path:
+        """The directory relative paths resolve against.
+
+        When the config lives at ``<root>/.autosentry/autosentry.yaml``
+        the project root is ``<root>``; for a custom ``--config`` path
+        (or the legacy root-level config) it's the file's own directory.
+        Falls back to the cwd when the config wasn't loaded from disk.
+        """
+        if self.config_path is None:
+            return Path.cwd()
+        parent = self.config_path.parent
+        if parent.name == ".autosentry":
+            return parent.parent
+        return parent
 
 
 _ENV_REF = re.compile(r"\$\{?([A-Z_][A-Z0-9_]*)\}?")
@@ -258,9 +296,45 @@ def _interpolate_env(value: Any) -> Any:
     return value
 
 
+def _legacy_fallback(path: Path) -> Path | None:
+    """Return the pre-0.8 root-level config if ``path`` points at the new
+    ``.autosentry/autosentry.yaml`` slot and nothing is there yet.
+
+    Keyed on path *shape* (``…/.autosentry/autosentry.yaml``) rather than
+    equality with the default, so an explicit
+    ``--config .autosentry/autosentry.yaml`` gets the same courtesy.
+    """
+    if path.name == "autosentry.yaml" and path.parent.name == ".autosentry":
+        legacy = path.parent.parent / "autosentry.yaml"
+        if legacy.exists():
+            return legacy
+    return None
+
+
+def resolve_existing_config(path: str | Path) -> Path | None:
+    """Return the config path that :func:`load_config` would read — the
+    given ``path`` or its legacy fallback — or ``None`` if neither exists.
+
+    For existence checks and phase detection (``doctor``, ``onboard``)
+    that need to know *whether* a config is present without raising.
+    """
+    path = Path(path)
+    if path.exists():
+        return path
+    return _legacy_fallback(path)
+
+
 def load_config(path: str | Path) -> AutoSentryConfig:
-    """Load and validate ``autosentry.yaml`` from disk."""
-    path = Path(path).resolve()
+    """Load and validate the config from disk.
+
+    Looks at ``path`` (default ``.autosentry/autosentry.yaml``); if it's
+    missing, falls back to a legacy root-level ``autosentry.yaml`` before
+    giving up, so repos initialized before the 0.8 move keep working.
+    """
+    path = Path(path)
+    if not path.exists():
+        path = _legacy_fallback(path) or path
+    path = path.resolve()
     if not path.exists():
         msg = f"config not found: {path}"
         raise FileNotFoundError(msg)

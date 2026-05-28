@@ -15,7 +15,7 @@ When invoked:
    Confirm with `autosentry --version`. Do not install silently — ask
    the user before running it.
 
-2. Check for an existing `autosentry.yaml`. If one exists, run
+2. Check for an existing `.autosentry/autosentry.yaml`. If one exists, run
    `autosentry init --upgrade` instead of clobbering. If not, run
    `autosentry init --non-interactive` to scaffold the skeleton.
 
@@ -23,7 +23,7 @@ When invoked:
    `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`, a
    `Makefile`, or a `scripts/` directory. Propose a `process.command`
    value to the user — **ask them to confirm before editing
-   `autosentry.yaml`**. Don't guess at training commands or service
+   `.autosentry/autosentry.yaml`**. Don't guess at training commands or service
    entry points without checking.
 
 4. Propose `config_snapshots`. Sensible candidates: `.env`,
@@ -59,7 +59,7 @@ When invoked:
 
 - Don't run `autosentry run` yourself — it's a long-running process
   the user controls.
-- Don't overwrite `autosentry.yaml` without explicit consent.
+- Don't overwrite `.autosentry/autosentry.yaml` without explicit consent.
 - Don't add detectors or rules without asking first.
 - One-line responses per step. The user is operating; you're
   configuring.

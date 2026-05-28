@@ -26,6 +26,7 @@ from rich.table import Table
 from autosentry import __version__
 from autosentry.cli import app
 from autosentry.cli.style import ACCENT, DIM, ERR, OK, WARN, console
+from autosentry.config import DEFAULT_CONFIG_PATH
 
 CheckStatus = Literal["ok", "warn", "fail"]
 
@@ -40,10 +41,11 @@ class Check:
 @app.command()
 def doctor(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"),
+        DEFAULT_CONFIG_PATH,
         "--config",
         "-c",
-        help="Path to autosentry.yaml (skipped checks if missing).",
+        help="Path to the config (defaults to .autosentry/autosentry.yaml; "
+        "skipped checks if missing).",
     ),
 ) -> None:
     """Audit the autosentry environment and print a pass/warn/fail table.
@@ -104,7 +106,10 @@ def _check_git_repo(cwd: Path) -> Check:
 
 
 def _check_config_loadable(config: Path) -> tuple[Check, object | None]:
-    if not config.exists():
+    from autosentry.config import load_config, resolve_existing_config
+
+    found = resolve_existing_config(config)
+    if found is None:
         return (
             Check(
                 name="autosentry.yaml",
@@ -114,15 +119,13 @@ def _check_config_loadable(config: Path) -> tuple[Check, object | None]:
             None,
         )
     try:
-        from autosentry.config import load_config
-
-        cfg = load_config(config)
+        cfg = load_config(found)
     except Exception as e:  # noqa: BLE001
         return (
             Check(name="autosentry.yaml", status="fail", detail=f"parse error: {e}"),
             None,
         )
-    return Check(name="autosentry.yaml", status="ok", detail=str(config)), cfg
+    return Check(name="autosentry.yaml", status="ok", detail=str(found)), cfg
 
 
 def _check_tree_sitter(cfg) -> Check:  # noqa: ANN001 — AutoSentryConfig

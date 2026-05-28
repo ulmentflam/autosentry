@@ -7,16 +7,17 @@ from pathlib import Path
 import typer
 
 from autosentry.cli import app
-from autosentry.config import load_config
+from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 
 
 @app.command()
 def web(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"),
+        DEFAULT_CONFIG_PATH,
         "--config",
         "-c",
-        help="Path to autosentry.yaml. Defaults to ./autosentry.yaml.",
+        help="Path to the config. Defaults to .autosentry/autosentry.yaml "
+        "(falls back to ./autosentry.yaml).",
     ),
     host: str = typer.Option(
         "127.0.0.1",

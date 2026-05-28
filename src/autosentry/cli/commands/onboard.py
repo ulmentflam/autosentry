@@ -26,12 +26,13 @@ from autosentry.cli.style import (
     console,
     is_interactive,
 )
+from autosentry.config import DEFAULT_CONFIG_PATH
 
 
 @app.command()
 def onboard(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"), "--config", "-c"
+        DEFAULT_CONFIG_PATH, "--config", "-c"
     ),
     for_agent: bool = typer.Option(
         False,
@@ -68,8 +69,10 @@ def _detect_phase(config: Path) -> str:
     # If we're running this command at all, the CLI is installed. We keep
     # ``uninstalled`` in the enum for the playbook docs in case someone
     # follows it from another machine.
+    from autosentry.config import resolve_existing_config
+
     cwd = Path.cwd()
-    if not (cwd / config).exists():
+    if resolve_existing_config(cwd / config) is None:
         return "no_config"
     state = cwd / ".autosentry" / "state.json"
     if not state.exists():
@@ -103,17 +106,18 @@ def _print_human(phase: str, config: Path) -> None:
     console.print(f"[{DIM}]phase: [/{DIM}][{INFO}]{phase}[/{INFO}]\n")
 
     if phase == "no_config":
-        console.print(f"[{ACCENT}]no autosentry.yaml here yet[/{ACCENT}]")
+        console.print(f"[{ACCENT}]no autosentry config here yet[/{ACCENT}]")
         console.print(
             f"  [{OK}]1.[/{OK}] [bold]autosentry init[/bold]   "
-            f"[{DIM}]# scaffolds autosentry.yaml + .autosentry/[/{DIM}]"
+            f"[{DIM}]# scaffolds the .autosentry/ tree (config + runtime)[/{DIM}]"
         )
         console.print(
             f"  [{OK}]2.[/{OK}] [bold]autosentry doctor[/bold] "
             f"[{DIM}]# confirm env is healthy[/{DIM}]"
         )
         console.print(
-            f"  [{OK}]3.[/{OK}] Edit [bold]autosentry.yaml[/bold] — set process.command + detectors"
+            f"  [{OK}]3.[/{OK}] Edit [bold].autosentry/autosentry.yaml[/bold] — "
+            f"set process.command + detectors"
         )
         console.print(f"  [{OK}]4.[/{OK}] [bold]autosentry run[/bold]")
         _print_skills_hint()
@@ -174,7 +178,7 @@ def _print_agent(phase: str, config: Path) -> None:
         print("next:")
         print("  - autosentry init")
         print("  - autosentry doctor")
-        print("  - edit autosentry.yaml: set process.command + detectors + rules")
+        print("  - edit .autosentry/autosentry.yaml: set process.command + detectors + rules")
         print("  - autosentry run")
         return
     if phase == "not_running":
@@ -194,7 +198,7 @@ def _print_agent(phase: str, config: Path) -> None:
         print("rule:")
         print(
             "  - if 3+ kept Claude fixes for the same detector, "
-            "codify a YAML rule in autosentry.yaml"
+            "codify a YAML rule in .autosentry/autosentry.yaml"
         )
         return
     print("next:")

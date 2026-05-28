@@ -11,7 +11,7 @@ condensed router:
 1. `command -v autosentry && autosentry --version` → if missing,
    suggest:
    `curl -fsSL https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.sh | sh`
-2. `[ -f autosentry.yaml ]` → if missing, `autosentry init` and walk
+2. `[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]` → if missing, `autosentry init` and walk
    the user through `process.command`, `config_snapshots`, detectors,
    and rules.
 3. `[ -f .autosentry/state.json ]` → if missing, launch:

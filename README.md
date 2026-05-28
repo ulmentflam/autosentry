@@ -163,9 +163,10 @@ overwrite an existing file or change tracked code.
        curl -fsSL https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.sh | sh
    Then confirm with `autosentry --version`.
 
-2. Run `autosentry init --non-interactive` to scaffold autosentry.yaml
-   and the .autosentry/ tree. (Use `--upgrade --force` if a config
-   already exists and looks pre-0.6.1.)
+2. Run `autosentry init --non-interactive` to scaffold the .autosentry/
+   tree (the config lives at `.autosentry/autosentry.yaml`). (Use
+   `--upgrade --force` if a config already exists and looks pre-0.6.1, or
+   to migrate a legacy root-level `autosentry.yaml` into `.autosentry/`.)
 
 3. Inspect this repo to figure out:
      - the right `process.command` (the thing I want supervised — read
@@ -177,7 +178,7 @@ overwrite an existing file or change tracked code.
        (OOM / NCCL / connection-reset patterns for ML; HTTP 5xx /
        connection-refused for web; stall regex matching whatever
        progress format my process emits)
-   Edit autosentry.yaml in place.
+   Edit `.autosentry/autosentry.yaml` in place.
 
 4. Install the /autosentry slash command for me with
    `autosentry skills install --tool all`. This drops AGENTS.md plus the
@@ -190,8 +191,9 @@ overwrite an existing file or change tracked code.
    (the `nohup autosentry run …` one-liner), but DO NOT run it
    yourself. I'll start it.
 
-Be terse. One or two sentences per step. Point me at autosentry.yaml
-and `.autosentry/program.md` for context — don't re-narrate the docs.
+Be terse. One or two sentences per step. Point me at
+`.autosentry/autosentry.yaml` and `.autosentry/program.md` for context —
+don't re-narrate the docs.
 ```
 
 </details>
@@ -387,14 +389,21 @@ into a "decisions that might be relevant" view.
 
 ## Configuration reference
 
-After `autosentry init` you have an `autosentry.yaml` with every option
-commented in place. The top-level shape:
+After `autosentry init` you have a `.autosentry/autosentry.yaml` with every
+option commented in place. It lives inside `.autosentry/` alongside the
+runtime state, and `init` drops a `.autosentry/.gitignore` so the whole
+tree — config included — stays out of git by default (delete that file to
+track the config). Relative paths in the config resolve against the
+**project root** — the directory that contains `.autosentry/` — not the
+config file's own directory. A pre-0.8 root-level `autosentry.yaml` is
+still loaded as a fallback; `autosentry init --upgrade` migrates it.
+The top-level shape:
 
 | key                | type          | default                          | what it does |
 |--------------------|---------------|----------------------------------|--------------|
 | `process.kind`     | enum          | `local`                          | `local`, `slurm`, `docker`, or `attach` (tail an existing PID/log) |
 | `process.command`  | list[str]     | —                                | argv passed to the process. No shell interpretation. |
-| `process.cwd`      | str           | `.`                              | working dir, relative to the config file |
+| `process.cwd`      | str           | `.`                              | working dir, relative to the project root (the dir containing `.autosentry/`) |
 | `process.env`      | dict[str,str] | `{}`                             | env vars; values can interpolate `$VAR` / `${VAR}` |
 | `process.restart_policy.max_restarts` | int | `10`                 | when exceeded, monitor gives up |
 | `process.restart_policy.cooldown_seconds` | int | `60`             | wait before restart |

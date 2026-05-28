@@ -1,6 +1,9 @@
-"""``autosentry init`` — scaffold autosentry.yaml + .autosentry/ into a repo.
+"""``autosentry init`` — scaffold the ``.autosentry/`` tree into a repo.
 
-The interactive flow detects the user's stack (python/node/go/rust) and
+The config lives at ``.autosentry/autosentry.yaml`` alongside the runtime
+state, so a single ``.autosentry/`` git-ignore entry (written by init)
+covers everything. The interactive flow detects the user's stack
+(python/node/go/rust) and
 offers sensible defaults for ``process.command``. Pass
 ``--non-interactive`` to skip prompts (preserves the original behavior
 for scripts / CI). Pass ``--upgrade`` to refresh defaults in an
@@ -29,6 +32,7 @@ from autosentry.cli.style import (
     hint,
     is_interactive,
 )
+from autosentry.config import DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH
 
 # Templates live next to the package — same path the legacy CLI used.
 TEMPLATES = Path(__file__).resolve().parents[2] / "templates"
@@ -101,8 +105,9 @@ def init(
         ),
     ),
 ) -> None:
-    """Scaffold a heavily-commented autosentry.yaml + .autosentry/ tree
-    into the target directory.
+    """Scaffold the ``.autosentry/`` tree — a heavily-commented
+    ``.autosentry/autosentry.yaml`` plus the runtime dirs and a
+    ``.autosentry/.gitignore`` — into the target directory.
 
     Run this once per repo. On an interactive terminal the command
     detects your stack (pyproject.toml / package.json / Cargo.toml /
@@ -125,39 +130,62 @@ def init(
     target = target.resolve()
     target.mkdir(parents=True, exist_ok=True)
 
-    yaml_dst = target / "autosentry.yaml"
+    autosentry_dir = target / ".autosentry"
+    yaml_dst = target / DEFAULT_CONFIG_PATH  # target/.autosentry/autosentry.yaml
+    legacy_dst = target / LEGACY_CONFIG_PATH  # pre-0.8 root-level config
     yaml_src = TEMPLATES / "autosentry.yaml.tmpl"
 
     # ``--upgrade`` is a different flow from a fresh init: refresh scalar
-    # defaults in the existing config in place, then exit.
+    # defaults in the existing config in place, then exit. Prefer the new
+    # location; fall back to — and migrate — a legacy root-level config.
     if upgrade:
-        if not yaml_dst.exists():
+        upgrade_target = yaml_dst if yaml_dst.exists() else legacy_dst
+        if not upgrade_target.exists():
             console.print(
-                f"[{WARN}]nothing to upgrade — {yaml_dst} doesn't exist. "
-                f"Run `autosentry init` first.[/{WARN}]"
+                f"[{WARN}]nothing to upgrade — no config at {yaml_dst} "
+                f"(or legacy {legacy_dst}). Run `autosentry init` first.[/{WARN}]"
             )
             raise typer.Exit(code=1)
-        changed = _upgrade_in_place(yaml_dst, yaml_src, force=force or non_interactive)
+        # Relocate a legacy root config into .autosentry/ (contents +
+        # comments preserved) so every future run finds it canonically.
+        if upgrade_target == legacy_dst:
+            autosentry_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy_dst), str(yaml_dst))
+            _write_gitignore(autosentry_dir)
+            console.print(f"  [{OK}]✓[/{OK}] migrated {legacy_dst} → {yaml_dst}")
+            upgrade_target = yaml_dst
+        changed = _upgrade_in_place(upgrade_target, yaml_src, force=force or non_interactive)
         if changed:
-            console.print(f"[{OK}]✓[/{OK}] refreshed {len(changed)} key(s) in {yaml_dst}")
+            console.print(f"[{OK}]✓[/{OK}] refreshed {len(changed)} key(s) in {upgrade_target}")
         else:
             hint("(no defaults needed refreshing)")
         return
 
     if yaml_dst.exists() and not force:
-        console.print(f"[{WARN}]autosentry.yaml already exists at {yaml_dst}[/{WARN}]")
+        console.print(f"[{WARN}]config already exists at {yaml_dst}[/{WARN}]")
         console.print("Pass --force to overwrite, or --upgrade to refresh defaults in place.")
         raise typer.Exit(code=1)
-    shutil.copy(yaml_src, yaml_dst)
+    # A pre-0.8 root-level config would be silently shadowed by a fresh one
+    # written here. Don't clobber it — point the user at --upgrade (migrates
+    # it) or --force (start clean in the new location).
+    if legacy_dst.exists() and not yaml_dst.exists() and not force:
+        console.print(f"[{WARN}]found a root-level {legacy_dst.name} (pre-0.8 layout)[/{WARN}]")
+        console.print(
+            "Run `autosentry init --upgrade` to migrate it into .autosentry/, "
+            "or --force to start fresh there."
+        )
+        raise typer.Exit(code=1)
 
-    (target / ".autosentry").mkdir(exist_ok=True)
-    (target / ".autosentry" / "incidents").mkdir(exist_ok=True)
-    (target / ".autosentry" / "logs").mkdir(exist_ok=True)
-    prompts = target / ".autosentry" / "prompts"
+    autosentry_dir.mkdir(parents=True, exist_ok=True)
+    (autosentry_dir / "incidents").mkdir(exist_ok=True)
+    (autosentry_dir / "logs").mkdir(exist_ok=True)
+    prompts = autosentry_dir / "prompts"
     prompts.mkdir(exist_ok=True)
+    _write_gitignore(autosentry_dir)
+    shutil.copy(yaml_src, yaml_dst)
     shutil.copy(TEMPLATES / "recovery.md.tmpl", prompts / "recovery.md")
 
-    program_dst = target / ".autosentry" / "program.md"
+    program_dst = autosentry_dir / "program.md"
     if not program_dst.exists():
         shutil.copy(TEMPLATES / "program.md.tmpl", program_dst)
 
@@ -339,6 +367,30 @@ def _propose_snapshots(repo_root: Path) -> list[str]:
     return [c for c in candidates if (repo_root / c).exists()]
 
 
+# ----- gitignore ------------------------------------------------------------
+
+
+def _write_gitignore(autosentry_dir: Path) -> None:
+    """Drop a ``.gitignore`` that keeps the whole ``.autosentry/`` tree —
+    config and runtime state alike — out of version control.
+
+    Self-contained: one file inside ``.autosentry/``, zero edits to the
+    repo's root ``.gitignore``. Delete it (or add ``!`` negations) to
+    start tracking pieces of the tree. Never overwrites an existing file.
+    """
+    gi = autosentry_dir / ".gitignore"
+    if gi.exists():
+        return
+    gi.write_text(
+        "# Created by `autosentry init`. Everything autosentry writes lives\n"
+        "# under .autosentry/, so this ignores the whole tree — config and\n"
+        "# runtime state alike. Remove this file (or add `!` negations) to\n"
+        "# track pieces of it in git.\n"
+        "*\n",
+        encoding="utf-8",
+    )
+
+
 # ----- agent notes ---------------------------------------------------------
 
 
@@ -357,7 +409,7 @@ repo is configured. Your job is to operate the supervisor end-to-end.
 See `AGENTS.md` at the repo root for the full playbook. The condensed
 runbook for *this* repo:
 
-1. Read `autosentry.yaml`. Verify `process.command` matches the actual
+1. Read `.autosentry/autosentry.yaml`. Verify `process.command` matches the actual
    thing the user wants supervised. If empty / placeholder, prompt the
    user before launching.
 2. Run `autosentry doctor` to confirm the environment is healthy.
@@ -388,7 +440,7 @@ def _print_next_steps(yaml_dst: Path, target: Path, program_dst: Path, *, for_ag
     if for_agent:
         files_lines.append(f"  notes:   {target}/.autosentry/AGENT_NOTES.md")
     next_lines = [
-        "  1. Review autosentry.yaml — detectors and rules are starter values.",
+        "  1. Review .autosentry/autosentry.yaml — detectors and rules are starter values.",
         "  2. Run [bold]autosentry doctor[/bold] to confirm the environment is healthy.",
         "  3. Start the monitor: [bold]autosentry run[/bold]",
         "  4. Operator dashboard: [bold]autosentry watch[/bold] · "

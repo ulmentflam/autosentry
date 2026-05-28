@@ -15,7 +15,7 @@ import typer
 
 from autosentry.cli import app
 from autosentry.cli.style import ERR, OK, console
-from autosentry.config import load_config
+from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 
 healer_app = typer.Typer(
     no_args_is_help=True,
@@ -31,7 +31,7 @@ _VALID_ACTIONS = ("restart", "restart_with_env", "pause", "abort", "custom_comma
 @healer_app.command("respond")
 def respond(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"), "--config", "-c"
+        DEFAULT_CONFIG_PATH, "--config", "-c"
     ),
     action: str = typer.Option(
         "restart",

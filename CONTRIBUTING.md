@@ -148,7 +148,7 @@ Each layer is small and pluggable. If you're adding to one:
 
 Use the issue template. Include:
 - `autosentry --version`
-- The relevant slice of your `autosentry.yaml`
+- The relevant slice of your `.autosentry/autosentry.yaml`
 - The latest incident folder (or the contents of `.autosentry/logs/autosentry.log`)
 - A minimal repro if you can — failing subprocess + config is ideal.
 

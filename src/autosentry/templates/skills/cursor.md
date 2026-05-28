@@ -7,7 +7,7 @@ playbook is in `AGENTS.md` at the repo root — load that first.
 
 ```bash
 command -v autosentry && autosentry --version       # installed?
-[ -f autosentry.yaml ]                              # configured?
+[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]   # configured?
 [ -f .autosentry/state.json ]                       # running?
 autosentry update --check                           # newer release? (cached daily)
 ```

@@ -5,7 +5,7 @@ destructive action.
 
 ```bash
 command -v autosentry && autosentry --version       # installed?
-[ -f autosentry.yaml ]                              # configured?
+[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]   # configured?
 ```
 
 Steps:

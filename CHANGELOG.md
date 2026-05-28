@@ -6,6 +6,35 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-27
+
+### Changed — config moved into `.autosentry/`
+
+- **The config now lives at `.autosentry/autosentry.yaml`.** Everything
+  autosentry writes — config, state, logs, incidents, prompts — sits
+  under `.autosentry/`, so a single `.autosentry/` entry git-ignores the
+  lot. `autosentry init` writes the config there and drops a
+  `.autosentry/.gitignore` (`*`) that keeps the whole tree out of version
+  control by default (delete it to track the config). Every command's
+  `--config` now defaults to `.autosentry/autosentry.yaml`.
+- **Relative config paths resolve against the project root** — the
+  directory containing `.autosentry/` — instead of the config file's own
+  directory. `state_path`, `incidents_dir`, `log_dir`, `config_snapshots`,
+  and `process.cwd` are unaffected by the move; they still anchor on the
+  repo root.
+- **Backward compatible.** A pre-0.8 root-level `autosentry.yaml` is still
+  loaded as a fallback, so existing repos keep working untouched.
+  `autosentry init --upgrade` migrates a legacy root config into
+  `.autosentry/` in place (comments preserved). A fresh `init` that finds
+  a legacy config refuses to silently shadow it — it points you at
+  `--upgrade` (migrate) or `--force` (start clean).
+
+### Removed
+
+- **Dropped the dead `src/autosentry/cli.py` god-module.** It was shadowed
+  by the `autosentry.cli` package and never imported; the live CLI is the
+  per-command tree under `autosentry/cli/commands/`.
+
 ## [0.7.4] — 2026-05-27
 
 ### Added — agent-driven update detection
@@ -602,7 +631,8 @@ by watching for the same detector to re-fire, and is recorded in a flat
   macOS, ruff lint + format check, pyrefly typecheck, pytest +
   coverage). iCloud `UF_HIDDEN` workaround baked into `make install`.
 
-[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.0
 [0.7.4]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.4
 [0.7.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.1
 [0.7.0]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.0

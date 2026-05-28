@@ -10,7 +10,7 @@ root for the complete playbook. Quick router:
 1. `command -v autosentry && autosentry --version` → not installed?
    Suggest:
    `curl -fsSL https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.sh | sh`
-2. `[ -f autosentry.yaml ]` → not configured? Run `autosentry init`
+2. `[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]` → not configured? Run `autosentry init`
    and configure `process.command`, `config_snapshots`, detectors,
    and rules.
 3. `[ -f .autosentry/state.json ]` → not running? Launch:

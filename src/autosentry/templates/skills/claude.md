@@ -10,7 +10,7 @@ Follow the full playbook in [`AGENTS.md`](../../AGENTS.md). Quick triage:
 
 ```bash
 command -v autosentry && autosentry --version
-[ -f autosentry.yaml ] && echo configured
+{ [ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]; } && echo configured
 [ -f .autosentry/state.json ] && jq -r '{pid, restarts, last_heartbeat}' .autosentry/state.json
 autosentry update --check   # newer release? (cached daily)
 ```

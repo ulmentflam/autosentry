@@ -30,7 +30,7 @@ a slash), determine which **phase** they're in and help them progress.
 
 ```bash
 command -v autosentry >/dev/null && autosentry --version       # phase ≥ 1
-[ -f autosentry.yaml ] && echo configured                      # phase ≥ 2
+{ [ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]; } && echo configured   # phase ≥ 2
 [ -f .autosentry/state.json ] && cat .autosentry/state.json    # phase ≥ 3
 # phase 4 = phase 3 + the pid in state.json is alive
 ls -la .autosentry/recovery_request.md 2>/dev/null              # phase 5?
@@ -83,7 +83,7 @@ fallback: `pip install --user autosentry`.
 
 ## Phase 2 — initialize and configure
 
-`autosentry init` writes `autosentry.yaml` (heavily commented),
+`autosentry init` writes `.autosentry/autosentry.yaml` (heavily commented),
 `.autosentry/program.md` (the operator mission statement), and a
 `.autosentry/` skeleton. Then walk the user through:
 

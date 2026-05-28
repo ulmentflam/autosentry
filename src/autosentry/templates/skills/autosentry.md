@@ -12,7 +12,7 @@ When the user invokes `/autosentry`, figure out which phase they're in
 and help them progress. Phases:
 
 1. **Not installed** — `autosentry` is not on PATH.
-2. **Installed, not initialized** — no `autosentry.yaml` in the cwd.
+2. **Installed, not initialized** — no `.autosentry/autosentry.yaml` in the cwd.
 3. **Initialized, not running** — config exists; monitor isn't started.
 4. **Running** — monitor is up; user wants status / incidents / rules.
 5. **Recovery request open** — the monitor has written
@@ -21,7 +21,7 @@ and help them progress. Phases:
 
 ```bash
 command -v autosentry >/dev/null && autosentry --version       # ≥ phase 1
-[ -f autosentry.yaml ] && echo configured                      # ≥ phase 2
+{ [ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]; } && echo configured   # ≥ phase 2
 [ -f .autosentry/state.json ] && cat .autosentry/state.json    # ≥ phase 3
 ls -la .autosentry/recovery_request.md 2>/dev/null             # phase 5?
 ```

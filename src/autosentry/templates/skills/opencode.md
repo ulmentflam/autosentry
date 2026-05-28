@@ -8,7 +8,7 @@ agent: build
 Full playbook lives in [`AGENTS.md`](../../AGENTS.md). Quick router:
 
 1. `command -v autosentry` → missing → suggest the install one-liner.
-2. `[ -f autosentry.yaml ]` → missing → `autosentry init`, then help fill
+2. `[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]` → missing → `autosentry init`, then help fill
    in `process.command`, `config_snapshots`, detectors, and rules
    matched to the user's stack.
 3. `[ -f .autosentry/state.json ]` → missing → launch:

@@ -8,7 +8,7 @@ root — read it first.
 
 ```bash
 command -v autosentry && autosentry --version
-[ -f autosentry.yaml ] && echo configured
+{ [ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]; } && echo configured
 [ -f .autosentry/state.json ] && cat .autosentry/state.json
 autosentry update --check   # newer release? (cached daily)
 ```
@@ -36,6 +36,6 @@ fixes that all verified, codify a YAML rule:
   action: { kind: restart_with_env, set: { KEY: value } }
 ```
 
-Insert into `autosentry.yaml` under `rules:` before any catch-all.
+Insert into `.autosentry/autosentry.yaml` under `rules:` before any catch-all.
 
 Keep responses tight. One or two sentences per action.

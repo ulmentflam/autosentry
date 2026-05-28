@@ -10,7 +10,7 @@ import typer
 
 from autosentry.cli import app
 from autosentry.cli.style import ERR, WARN, console
-from autosentry.config import load_config
+from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 
 dispatcher_app = typer.Typer(
     no_args_is_help=True,
@@ -25,7 +25,7 @@ app.add_typer(dispatcher_app, name="dispatcher")
 @dispatcher_app.command("run")
 def dispatcher_run(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"), "--config", "-c"
+        DEFAULT_CONFIG_PATH, "--config", "-c"
     ),
     backend: str = typer.Option(
         "",
@@ -208,7 +208,7 @@ def dispatcher_run(
 @dispatcher_app.command("pending")
 def dispatcher_pending(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"), "--config", "-c"
+        DEFAULT_CONFIG_PATH, "--config", "-c"
     ),
 ) -> None:
     """List currently pending (unsent) outbox entries — no delivery."""

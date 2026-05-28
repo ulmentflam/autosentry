@@ -11,8 +11,7 @@ build/
 .coverage
 htmlcov/
 
-# autosentry runtime artifacts (in repos that use it)
-.autosentry/logs/
-.autosentry/state.json
-.autosentry/slack_outbox.jsonl
-.autosentry/slack_responses.json
+# autosentry — config + runtime all live under .autosentry/, so one entry
+# ignores the whole tree (this is what `autosentry init` drops as
+# .autosentry/.gitignore in repos that use it).
+.autosentry/

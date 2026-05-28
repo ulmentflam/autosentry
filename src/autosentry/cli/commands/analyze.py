@@ -10,16 +10,17 @@ from rich.table import Table
 
 from autosentry.cli import app
 from autosentry.cli.style import ACCENT, ERR, INFO, console
-from autosentry.config import load_config
+from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 
 
 @app.command()
 def analyze(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"),
+        DEFAULT_CONFIG_PATH,
         "--config",
         "-c",
-        help="Path to autosentry.yaml. Defaults to ./autosentry.yaml.",
+        help="Path to the config. Defaults to .autosentry/autosentry.yaml "
+        "(falls back to ./autosentry.yaml).",
     ),
     since: str = typer.Option(
         "",

@@ -1,6 +1,6 @@
 # Gemini CLI / Antigravity custom command — /autosentry-init
 
-description = "Set up autosentry in the current repo — install, scaffold autosentry.yaml, propose detectors and rules for the stack."
+description = "Set up autosentry in the current repo — install, scaffold the .autosentry/ tree, propose detectors and rules for the stack."
 
 prompt = """
 Onboard the current repo to autosentry. Confirm before destructive
@@ -10,14 +10,14 @@ actions; one sentence per step.
    `curl -fsSL https://raw.githubusercontent.com/ulmentflam/autosentry/main/install.sh | sh`
    Ask the user before running.
 
-2. `[ -f autosentry.yaml ]` → if missing:
+2. `[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]` → if missing:
    `autosentry init --non-interactive`
    → if present:
    `autosentry init --upgrade`
 
 3. Read the repo (pyproject.toml / package.json / Cargo.toml / go.mod
    / Makefile / scripts/) and propose `process.command`. **Ask before
-   editing autosentry.yaml.**
+   editing .autosentry/autosentry.yaml.**
 
 4. Propose `config_snapshots` — only files that exist.
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autosentry"
-version = "0.7.4"
+version = "0.8.0"
 description = "Self-healing supervisor for long-running processes — watch a command, catch the failure, fix it, leave a paper trail."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -65,7 +65,6 @@ ignore = ["S603", "S607"]  # subprocess use is intentional throughout
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S108", "B017", "E501"]  # tests get a lighter touch
-"src/autosentry/cli.py" = ["B008"]             # typer.Option(...) in defaults is the typer idiom
 
 [tool.ruff.format]
 quote-style = "double"

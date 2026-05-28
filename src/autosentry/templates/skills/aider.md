@@ -11,7 +11,7 @@ Read `AGENTS.md` first — Aider has it on as a `read:` file via
 
 ```bash
 command -v autosentry && autosentry --version       # installed?
-[ -f autosentry.yaml ]                              # configured?
+[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]   # configured?
 [ -f .autosentry/state.json ]                       # running?
 ```
 
@@ -25,7 +25,7 @@ autosentry has flagged:
 - Don't disable detectors to silence them. Tighten thresholds
   instead.
 - If three+ Claude-fixed incidents for the same detector all `kept`,
-  propose a YAML rule update in `autosentry.yaml` rather than a code
+  propose a YAML rule update in `.autosentry/autosentry.yaml` rather than a code
   change.
 
 ## Style

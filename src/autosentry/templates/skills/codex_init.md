@@ -5,7 +5,7 @@ destructive action.
 
 ```bash
 command -v autosentry && autosentry --version
-[ -f autosentry.yaml ] && echo configured || echo fresh
+{ [ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]; } && echo configured || echo fresh
 ```
 
 Flow:
@@ -15,7 +15,7 @@ Flow:
 2. Missing config → `autosentry init --non-interactive`. Present
    config → `autosentry init --upgrade`.
 3. Read the repo, propose `process.command`. **Ask the user** before
-   editing autosentry.yaml.
+   editing .autosentry/autosentry.yaml.
 4. Propose `config_snapshots` from `.env`, `configs/*.yaml`,
    `pyproject.toml` (only existing files).
 5. Propose starter detectors + rules for the observed stack.

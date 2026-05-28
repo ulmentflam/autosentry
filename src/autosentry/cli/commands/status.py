@@ -9,17 +9,18 @@ from rich.table import Table
 
 from autosentry.cli import app
 from autosentry.cli.style import console
-from autosentry.config import load_config
+from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 from autosentry.state import StateStore
 
 
 @app.command()
 def status(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"),
+        DEFAULT_CONFIG_PATH,
         "--config",
         "-c",
-        help="Path to autosentry.yaml. Defaults to ./autosentry.yaml.",
+        help="Path to the config. Defaults to .autosentry/autosentry.yaml "
+        "(falls back to ./autosentry.yaml).",
     ),
 ) -> None:
     """One-shot snapshot of the monitor's persisted state.

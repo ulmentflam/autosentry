@@ -38,7 +38,7 @@ LOOP UNTIL MANUALLY STOPPED:
    show <id>`. Look at the exploded source frames, the trace, the rule
    that fired (if any), and the Claude diff captured under `fix/`.
 3. **Decide**: was this a wrong rule, a flaky detector, or a real bug?
-   - **Wrong rule** → edit `autosentry.yaml` to refine the rule's
+   - **Wrong rule** → edit `.autosentry/autosentry.yaml` to refine the rule's
      match clause (e.g. tighten the `message_regex`) so the next time
      the failure looks different, it falls through to Claude.
    - **Flaky detector** → adjust thresholds (e.g. raise
@@ -59,7 +59,7 @@ LOOP UNTIL MANUALLY STOPPED:
   This file is the autonomous mission. If you run out of ideas, dig
   into incidents harder.
 - **Never edit `prepare.py`** ... uh, that's autoresearch. *Your*
-  unsupervised files are the autosentry config (`autosentry.yaml`) and
+  unsupervised files are the autosentry config (`.autosentry/autosentry.yaml`) and
   whatever the user has marked as read-only. Respect those bounds.
 - **Don't disable detectors** to silence noisy ones. Detectors are
   evidence; if they're noisy, the underlying process has a real
@@ -84,7 +84,7 @@ The human cares about:
 
 ## Bounds
 
-- You may edit `autosentry.yaml` to refine detectors and rules.
+- You may edit `.autosentry/autosentry.yaml` to refine detectors and rules.
 - You may merge `autosentry/fix-*` branches into the working branch
   when verification has held for 24h+.
 - You may not delete the ledger or incident folders.

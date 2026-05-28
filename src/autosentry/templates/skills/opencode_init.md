@@ -1,5 +1,5 @@
 ---
-description: Set up autosentry in this repo — install, scaffold autosentry.yaml, propose detectors and rules for the current stack.
+description: Set up autosentry in this repo — install, scaffold the .autosentry/ tree, propose detectors and rules for the current stack.
 agent: build
 ---
 
@@ -9,7 +9,7 @@ Onboard the current repo to autosentry. The condensed flow:
 
 1. `command -v autosentry` → if missing, suggest the install one-liner
    (ask before running).
-2. `[ -f autosentry.yaml ]` → if missing, `autosentry init --non-interactive`;
+2. `[ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]` → if missing, `autosentry init --non-interactive`;
    if present, `autosentry init --upgrade`.
 3. Read the repo (pyproject.toml / package.json / Cargo.toml / go.mod
    / Makefile) and propose `process.command`. **Ask before editing.**

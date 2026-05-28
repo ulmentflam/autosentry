@@ -10,7 +10,7 @@ from rich.table import Table
 
 from autosentry.cli import app
 from autosentry.cli.style import ERR, console
-from autosentry.config import load_config
+from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 
 incidents_app = typer.Typer(no_args_is_help=True, help="Browse incident folders.")
 app.add_typer(incidents_app, name="incidents")
@@ -19,7 +19,7 @@ app.add_typer(incidents_app, name="incidents")
 @incidents_app.command("list")
 def incidents_list(
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"), "--config", "-c", help="Path to autosentry.yaml."
+        DEFAULT_CONFIG_PATH, "--config", "-c", help="Path to the config."
     ),
     limit: int = typer.Option(
         20, "--limit", "-n", help="Show at most this many recent incidents (default 20)."
@@ -70,7 +70,7 @@ def incidents_show(
         ..., help="Incident id (the folder name under .autosentry/incidents/)."
     ),
     config: Path = typer.Option(  # noqa: B008
-        Path("autosentry.yaml"), "--config", "-c", help="Path to autosentry.yaml."
+        DEFAULT_CONFIG_PATH, "--config", "-c", help="Path to the config."
     ),
 ) -> None:
     """Print the rendered report.md for a single incident.

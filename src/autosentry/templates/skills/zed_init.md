@@ -5,7 +5,7 @@ destructive action.
 
 ```bash
 command -v autosentry && autosentry --version
-[ -f autosentry.yaml ] && echo configured || echo fresh
+{ [ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]; } && echo configured || echo fresh
 ```
 
 Steps:
@@ -16,7 +16,7 @@ Steps:
 2. No config → `autosentry init --non-interactive`. Existing →
    `autosentry init --upgrade`.
 3. Read the repo, propose `process.command`. **Ask the user before
-   editing autosentry.yaml.**
+   editing .autosentry/autosentry.yaml.**
 4. Propose `config_snapshots` (only files that exist).
 5. Propose detectors + rules for the stack you saw.
 6. `autosentry skills install --tool agents`. Add `--scope global` if

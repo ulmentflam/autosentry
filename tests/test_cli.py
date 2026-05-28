@@ -112,9 +112,15 @@ def test_onboard_for_agent_running(runner: CliRunner, isolated_cwd: Path):
 def test_init_non_interactive_creates_skeleton(runner: CliRunner, isolated_cwd: Path):
     result = runner.invoke(app, ["init", str(isolated_cwd), "--non-interactive"])
     assert result.exit_code == 0
-    assert (isolated_cwd / "autosentry.yaml").is_file()
+    # Config now lives inside .autosentry/, not at the repo root.
+    assert (isolated_cwd / ".autosentry" / "autosentry.yaml").is_file()
+    assert not (isolated_cwd / "autosentry.yaml").exists()
     assert (isolated_cwd / ".autosentry" / "program.md").is_file()
     assert (isolated_cwd / ".autosentry" / "prompts" / "recovery.md").is_file()
+    # init drops a .gitignore that keeps the whole tree out of git.
+    gi = isolated_cwd / ".autosentry" / ".gitignore"
+    assert gi.is_file()
+    assert gi.read_text().rstrip().endswith("*")
     assert "initialized autosentry" in result.stdout
 
 
@@ -129,17 +135,33 @@ def test_init_for_agent_writes_notes(runner: CliRunner, isolated_cwd: Path):
 
 
 def test_init_refuses_existing_without_force(runner: CliRunner, isolated_cwd: Path):
-    (isolated_cwd / "autosentry.yaml").write_text("existing")
+    (isolated_cwd / ".autosentry").mkdir()
+    (isolated_cwd / ".autosentry" / "autosentry.yaml").write_text("existing")
     result = runner.invoke(app, ["init", str(isolated_cwd), "--non-interactive"])
     assert result.exit_code == 1
     assert "already exists" in result.stdout
 
 
-def test_init_upgrade_refreshes_stale_default_with_force(runner: CliRunner, isolated_cwd: Path):
-    """A pre-existing config with a stale ``max_restarts: 5`` bumps to the
-    current template default (10) under ``--upgrade --force``."""
-    yaml_path = isolated_cwd / "autosentry.yaml"
-    yaml_path.write_text(
+def test_init_refuses_to_shadow_legacy_root_config(runner: CliRunner, isolated_cwd: Path):
+    """A fresh init that finds a pre-0.8 root-level config must not silently
+    write a new one that shadows it — it points the user at --upgrade."""
+    (isolated_cwd / "autosentry.yaml").write_text("process:\n  command: ['true']\n")
+    result = runner.invoke(app, ["init", str(isolated_cwd), "--non-interactive"])
+    assert result.exit_code == 1
+    assert "pre-0.8 layout" in result.stdout
+    # The legacy config is left untouched; no new one was written.
+    assert (isolated_cwd / "autosentry.yaml").exists()
+    assert not (isolated_cwd / ".autosentry" / "autosentry.yaml").exists()
+
+
+def test_init_upgrade_migrates_and_refreshes_legacy_root_config(
+    runner: CliRunner, isolated_cwd: Path
+):
+    """--upgrade on a pre-0.8 root-level config migrates it into
+    .autosentry/ (comments + customizations preserved) and bumps the stale
+    ``max_restarts: 5`` to the current template default (10)."""
+    legacy = isolated_cwd / "autosentry.yaml"
+    legacy.write_text(
         dedent(
             """\
             # autosentry — pre-existing user config
@@ -154,7 +176,12 @@ def test_init_upgrade_refreshes_stale_default_with_force(runner: CliRunner, isol
     )
     result = runner.invoke(app, ["init", str(isolated_cwd), "--upgrade", "--force"])
     assert result.exit_code == 0
-    body = yaml_path.read_text()
+    assert "migrated" in result.stdout
+    # The config now lives in .autosentry/; the legacy file is gone.
+    new_path = isolated_cwd / ".autosentry" / "autosentry.yaml"
+    assert new_path.is_file()
+    assert not legacy.exists()
+    body = new_path.read_text()
     assert "max_restarts: 10" in body
     # User's customization must survive intact.
     assert "my_special_script.py" in body
@@ -165,7 +192,8 @@ def test_init_upgrade_refreshes_stale_default_with_force(runner: CliRunner, isol
 def test_init_upgrade_inserts_missing_key(runner: CliRunner, isolated_cwd: Path):
     """A config missing an entire branch of the upgradeable tree gets the
     template's scalar defaults injected on --upgrade --force."""
-    yaml_path = isolated_cwd / "autosentry.yaml"
+    yaml_path = isolated_cwd / ".autosentry" / "autosentry.yaml"
+    yaml_path.parent.mkdir()
     yaml_path.write_text(
         dedent(
             """\
@@ -187,7 +215,7 @@ def test_init_upgrade_inserts_missing_key(runner: CliRunner, isolated_cwd: Path)
 def test_init_upgrade_noop_when_already_current(runner: CliRunner, isolated_cwd: Path):
     """Fresh init from the current template has nothing to upgrade."""
     runner.invoke(app, ["init", str(isolated_cwd), "--non-interactive"])
-    assert (isolated_cwd / "autosentry.yaml").exists()
+    assert (isolated_cwd / ".autosentry" / "autosentry.yaml").exists()
     result = runner.invoke(app, ["init", str(isolated_cwd), "--upgrade", "--force"])
     assert result.exit_code == 0
     assert "no defaults needed refreshing" in result.stdout or "0 key" in result.stdout
@@ -243,7 +271,7 @@ def test_init_interactive_rewrites_command_in_yaml(runner: CliRunner, isolated_c
     ):
         result = runner.invoke(app, ["init", str(isolated_cwd)])
     assert result.exit_code == 0
-    body = (isolated_cwd / "autosentry.yaml").read_text()
+    body = (isolated_cwd / ".autosentry" / "autosentry.yaml").read_text()
     assert "myscript.py" in body
     # Heavy template comments should survive the ruamel round-trip.
     assert "autosentry — supervised process configuration" in body
