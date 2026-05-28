@@ -107,10 +107,24 @@ def test_install_init_skill_drops_dash_init_files(tmp_path: Path):
     assert not (tmp_path / ".claude" / "commands" / "autosentry.md").exists()
 
 
-def test_install_skill_all_drops_both(tmp_path: Path):
+def test_install_skill_all_drops_every_skill(tmp_path: Path):
     skills.install(tmp_path, tools=["claude"], skill_name="all")
     assert (tmp_path / ".claude" / "commands" / "autosentry.md").is_file()
     assert (tmp_path / ".claude" / "commands" / "autosentry-init.md").is_file()
+    assert (tmp_path / ".claude" / "commands" / "autosentry-update.md").is_file()
+
+
+def test_install_update_skill_drops_dash_update_files(tmp_path: Path):
+    skills.install(tmp_path, tools=["claude", "gemini"], skill_name="update")
+    md = tmp_path / ".claude" / "commands" / "autosentry-update.md"
+    toml = tmp_path / ".gemini" / "commands" / "autosentry-update.toml"
+    assert md.is_file()
+    assert toml.is_file()
+    body = md.read_text()
+    assert "/autosentry-update" in body
+    assert "autosentry update --check" in body
+    # The focused update skill should NOT also drop the full playbook.
+    assert not (tmp_path / ".claude" / "commands" / "autosentry.md").exists()
 
 
 def test_install_global_scope_writes_to_home(tmp_path: Path, monkeypatch):
@@ -153,8 +167,15 @@ def test_install_global_scope_skips_agents(tmp_path: Path, monkeypatch):
     assert not (fake_home / "AGENTS.md").exists()
 
 
-def test_list_includes_both_skills():
-    """`skills_list` (and targets_for(skill_name='all')) covers both skills."""
+def test_list_includes_every_skill():
+    """`skills_list` (and targets_for(skill_name='all')) covers all skills."""
     targets = skills.targets_for(None, skill_name="all")
     skill_set = {t.skill for t in targets}
-    assert skill_set == {"autosentry", "init"}
+    assert skill_set == {"autosentry", "init", "update"}
+
+
+def test_update_skill_wired_for_focused_tools_only():
+    """The update skill ships for the same focused-tool set as init —
+    the slash-command tools, not the ambient-context ones."""
+    targets = skills.targets_for(None, skill_name="update")
+    assert {t.tool for t in targets} == {"claude", "opencode", "codex", "gemini", "cursor", "zed"}

@@ -17,14 +17,15 @@ skills_app = typer.Typer(
     help=(
         "Install AI-tool slash-command wrappers "
         "(Claude / OpenCode / Codex / Gemini / Cursor / Aider / Continue / Windsurf / Zed). "
-        "Two skills land here: `autosentry` (the full playbook) and `init` (focused "
-        "setup). Use --scope global to install once and have every repo pick them up."
+        "Three skills land here: `autosentry` (the full playbook), `init` (focused "
+        "setup), and `update` (focused upgrade). Use --scope global to install once and "
+        "have every repo pick them up."
     ),
 )
 app.add_typer(skills_app, name="skills")
 
 
-_VALID_SKILLS = ("autosentry", "init", "all")
+_VALID_SKILLS = ("autosentry", "init", "update", "all")
 _VALID_SCOPES = ("local", "global")
 
 
@@ -46,7 +47,8 @@ def skills_install(
         "-s",
         help=(
             "Which skill to install. Choices: 'autosentry' (full playbook), "
-            "'init' (focused setup), 'all'. Default: autosentry."
+            "'init' (focused setup), 'update' (focused upgrade), 'all'. "
+            "Default: autosentry."
         ),
     ),
     scope: str = typer.Option(
@@ -72,7 +74,8 @@ def skills_install(
     Each --tool drops one file at its canonical location for the chosen
     --skill (default `autosentry`, the full playbook). The `init` skill
     is a smaller `/autosentry-init` slash command focused on per-repo
-    setup. Pass `--skill all` to install both.
+    setup, and `update` is a `/autosentry-update` command that checks for
+    and applies a newer release. Pass `--skill all` to install every skill.
 
     `--scope global` writes to the tool's home-directory location instead
     of the current repo — handy when you want `/autosentry` available in
@@ -155,7 +158,7 @@ def skills_install(
 def skills_list() -> None:
     """Show every (tool, skill) pair `skills install` can target.
 
-    Lists the tool, the skill (autosentry vs init), the local
+    Lists the tool, the skill (autosentry / init / update), the local
     destination (relative to repo root), and the global destination (in
     $HOME). A blank global cell means the tool has no global path —
     only `--scope local` will write that one.

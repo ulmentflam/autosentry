@@ -740,7 +740,8 @@ leaving your editor.
 autosentry skills install                          # all tools, /autosentry skill
 autosentry skills install --tool claude            # one tool
 autosentry skills install --skill init             # the focused /autosentry-init slash command
-autosentry skills install --skill all              # both /autosentry and /autosentry-init
+autosentry skills install --skill update           # the focused /autosentry-update slash command
+autosentry skills install --skill all              # /autosentry + /autosentry-init + /autosentry-update
 
 # install once, inherit everywhere
 autosentry skills install --scope global           # writes ~/.claude/commands/, ~/.codex/prompts/, ...
@@ -749,10 +750,11 @@ autosentry skills install --scope global --skill all
 autosentry skills list                             # full destination table (local + global)
 ```
 
-Two skills land here:
+Three skills land here:
 
 - **`/autosentry`** — full operator playbook (install → init → run → operate → interactive recovery).
 - **`/autosentry-init`** — focused onboarding of a fresh repo (no operator/recovery content). Smaller reading cost for AI agents that only have one job.
+- **`/autosentry-update`** — focused check-and-upgrade: runs `autosentry update --check` and applies the right backend (uv / pipx / pip / Homebrew) when you're behind.
 
 Supported tools:
 

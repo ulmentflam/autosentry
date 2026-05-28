@@ -11,13 +11,16 @@ Templates ship inside the package at ``src/autosentry/templates/skills/``
 so an installed wheel has everything it needs without going back to the
 network.
 
-Two skills land here:
+Three skills land here:
 
 - ``autosentry`` — the full /autosentry slash command playbook (install
   → init → run → operate → interactive recovery).
 - ``init`` — a focused /autosentry-init slash command that ONLY does the
   per-repo setup flow. Smaller reading cost for AI agents when you just
   want a fresh repo onboarded.
+- ``update`` — a focused /autosentry-update slash command that checks for
+  a newer release and upgrades the CLI with the right backend (uv / pipx
+  / pip / Homebrew).
 """
 
 from __future__ import annotations
@@ -54,8 +57,8 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "agents",
 )
 
-SkillName = Literal["autosentry", "init"]
-ALL_SKILLS: tuple[SkillName, ...] = ("autosentry", "init")
+SkillName = Literal["autosentry", "init", "update"]
+ALL_SKILLS: tuple[SkillName, ...] = ("autosentry", "init", "update")
 
 Scope = Literal["local", "global"]
 ALL_SCOPES: tuple[Scope, ...] = ("local", "global")
@@ -215,10 +218,59 @@ _TARGETS: dict[tuple[ToolName, SkillName], SkillTarget] = {
         global_destination=_home() / ".config/zed/prompts/autosentry-init.md",
         label="Zed `/autosentry-init` prompt",
     ),
+    # ----- update (focused upgrade) -----
+    ("claude", "update"): SkillTarget(
+        tool="claude",
+        skill="update",
+        template="claude_update.md",
+        local_destination=Path(".claude/commands/autosentry-update.md"),
+        global_destination=_home() / ".claude/commands/autosentry-update.md",
+        label="Claude Code `/autosentry-update` slash command",
+    ),
+    ("opencode", "update"): SkillTarget(
+        tool="opencode",
+        skill="update",
+        template="opencode_update.md",
+        local_destination=Path(".opencode/command/autosentry-update.md"),
+        global_destination=_home() / ".config/opencode/command/autosentry-update.md",
+        label="OpenCode `/autosentry-update` slash command",
+    ),
+    ("codex", "update"): SkillTarget(
+        tool="codex",
+        skill="update",
+        template="codex_update.md",
+        local_destination=Path(".codex/prompts/autosentry-update.md"),
+        global_destination=_home() / ".codex/prompts/autosentry-update.md",
+        label="Codex CLI `/autosentry-update` prompt",
+    ),
+    ("gemini", "update"): SkillTarget(
+        tool="gemini",
+        skill="update",
+        template="gemini_update.toml",
+        local_destination=Path(".gemini/commands/autosentry-update.toml"),
+        global_destination=_home() / ".gemini/commands/autosentry-update.toml",
+        label="Gemini `/autosentry-update` command",
+    ),
+    ("cursor", "update"): SkillTarget(
+        tool="cursor",
+        skill="update",
+        template="cursor_update.md",
+        local_destination=Path(".cursor/commands/autosentry-update.md"),
+        global_destination=_home() / ".cursor/commands/autosentry-update.md",
+        label="Cursor `/autosentry-update` slash command",
+    ),
+    ("zed", "update"): SkillTarget(
+        tool="zed",
+        skill="update",
+        template="zed_update.md",
+        local_destination=Path(".zed/prompts/autosentry-update.md"),
+        global_destination=_home() / ".config/zed/prompts/autosentry-update.md",
+        label="Zed `/autosentry-update` prompt",
+    ),
     # Aider, Continue, Windsurf, and agents don't have per-skill slash
     # commands — they're ambient-context or universal files. The full
-    # /autosentry wrappers for those tools already mention init, so we
-    # don't ship duplicate init wrappers for them.
+    # /autosentry wrappers for those tools already mention init + update,
+    # so we don't ship duplicate focused wrappers for them.
 }
 
 

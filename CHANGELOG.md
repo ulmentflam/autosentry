@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-05-27
+
+### Added
+
+- **New `/autosentry-update` skill.** A focused slash command that runs
+  `autosentry update --check` and applies the right upgrade backend
+  (uv / pipx / pip / Homebrew) when you're behind — the update counterpart
+  to `/autosentry-init`. Install with `autosentry skills install --skill
+  update` (or `--skill all` for all three). Ships for Claude, OpenCode,
+  Codex, Gemini, Cursor, and Zed; `--skill all` now covers `autosentry`,
+  `init`, and `update`.
+
 ## [0.8.0] — 2026-05-27
 
 ### Changed — config moved into `.autosentry/`
@@ -631,7 +643,8 @@ by watching for the same detector to re-fire, and is recorded in a flat
   macOS, ruff lint + format check, pyrefly typecheck, pytest +
   coverage). iCloud `UF_HIDDEN` workaround baked into `make install`.
 
-[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.1
 [0.8.0]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.0
 [0.7.4]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.4
 [0.7.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.1
