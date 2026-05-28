@@ -48,31 +48,39 @@ class UpdateCheck:
 def detect_install_method() -> Method:
     """Guess how this autosentry got onto the box.
 
-    We look at the running interpreter's path and at well-known tool
-    install layouts. Order matters: uv tool layout is most specific,
-    pipx next, then anything else is treated as plain ``pip``.
+    We scan the running interpreter's path and the venv prefix for the
+    well-known tool layouts. Order matters: the tool venvs (uv, pipx) and
+    Homebrew are the most specific, then a ``~/.local`` pip --user install.
+
+    Crucially we look at the **unresolved** ``sys.executable`` and at
+    ``sys.prefix`` — never the symlink-resolved path. uv- and pipx-managed
+    tool venvs symlink ``bin/python`` to a base interpreter that lives
+    *outside* the tool tree (e.g. ``~/.local/share/uv/python/...``), so
+    resolving the symlink first erases the ``uv/tools`` / ``pipx/venvs``
+    marker and the install gets misdetected as pip (which a tool venv has
+    no ``pip`` to satisfy).
     """
-    py = Path(sys.executable).resolve()
+    exe = str(Path(sys.executable))  # unresolved on purpose — see docstring
+    prefix = str(Path(sys.prefix))  # venv root, e.g. .../uv/tools/autosentry
     home = Path.home()
+    blob = f"{exe}\n{prefix}"
 
     # Homebrew installs the formula's virtualenv under
-    # <prefix>/Cellar/autosentry/<ver>/libexec; the bin/autosentry symlink
-    # resolves back into that Cellar path. Detect it so we recommend
-    # `brew upgrade` instead of clobbering the Cellar with install.sh.
-    if "/Cellar/autosentry/" in str(py):
+    # <prefix>/Cellar/autosentry/<ver>/libexec — recommend `brew upgrade`
+    # instead of clobbering the Cellar with install.sh.
+    if "/Cellar/autosentry/" in blob:
         return "brew"
     # uv tool installs land under: $HOME/.local/share/uv/tools/<name>/...
-    if "uv/tools" in str(py) or "uv\\tools" in str(py):
+    if "uv/tools" in blob or "uv\\tools" in blob:
         return "uv"
     # pipx: $HOME/.local/pipx/venvs/<name>/...
-    if "pipx/venvs" in str(py) or "pipx\\venvs" in str(py):
+    if "pipx/venvs" in blob or "pipx\\venvs" in blob:
         return "pipx"
-    # Anything inside ~/.local that wasn't matched above looks like pip --user
-    try:
-        if home in py.parents and "/.local/" in str(py):
-            return "pip"
-    except ValueError:
-        pass
+    # A venv rooted under ~/.local that isn't one of the tool layouts above
+    # looks like a pip --user install.
+    local = str(home / ".local")
+    if any(p == local or p.startswith(local + os.sep) for p in (prefix, exe)):
+        return "pip"
     # Could still be pip in a virtualenv — but we don't want to auto-upgrade
     # a project's pinned venv on the user's behalf. Bail and let the caller
     # decide.
@@ -203,6 +211,11 @@ def perform_update(
         return _run(["pipx", "upgrade", *pre, "autosentry"])
     if chosen == "pip":
         py = os.environ.get("AUTOSENTRY_PYTHON") or sys.executable
+        # Defense in depth: a tool venv (uv/pipx) that slipped through
+        # detection has no `pip` module — don't hard-fail with "No module
+        # named pip"; fall back to the canonical installer instead.
+        if not _has_pip(py):
+            return _fallback_to_install_sh(allow_pre=allow_pre, version=version)
         return _run([py, "-m", "pip", "install", "--user", "--upgrade", *pre, spec])
     if chosen == "brew":
         # brew can't honor --pre or a pinned --version against our tap, so
@@ -211,6 +224,22 @@ def perform_update(
             return _run(["brew", "upgrade", "autosentry"])
         return _fallback_to_install_sh(allow_pre=allow_pre, version=version)
     return _fallback_to_install_sh(allow_pre=allow_pre, version=version)
+
+
+def _has_pip(py: str) -> bool:
+    """True if ``py -m pip`` is runnable. Tool venvs (uv/pipx) ship without
+    pip, so this guards the pip upgrade path from a guaranteed failure."""
+    try:
+        return (
+            subprocess.run(  # noqa: S603 — explicit list, no shell
+                [py, "-m", "pip", "--version"],
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except OSError:
+        return False
 
 
 def _run(cmd: list[str]) -> int:

@@ -6,6 +6,22 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-05-27
+
+### Fixed
+
+- **`autosentry update` misdetected uv-tool (and pipx) installs as `pip`
+  and failed with `No module named pip`.** `detect_install_method()`
+  resolved `sys.executable` before scanning it, but uv/pipx tool venvs
+  symlink `bin/python` to a base interpreter *outside* the tool tree — so
+  resolving erased the `uv/tools` / `pipx/venvs` marker and the `~/.local`
+  heuristic fell through to `pip`, which a tool venv has no `pip` to run.
+  Detection now scans the **unresolved** `sys.executable` and `sys.prefix`,
+  so uv installs correctly route to `uv tool upgrade autosentry`. As
+  defense in depth, the pip upgrade path now checks that `python -m pip` is
+  actually available and falls back to `install.sh` if not, instead of
+  hard-failing.
+
 ## [0.8.1] — 2026-05-27
 
 ### Added
@@ -643,7 +659,8 @@ by watching for the same detector to re-fire, and is recorded in a flat
   macOS, ruff lint + format check, pyrefly typecheck, pytest +
   coverage). iCloud `UF_HIDDEN` workaround baked into `make install`.
 
-[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.2
 [0.8.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.1
 [0.8.0]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.0
 [0.7.4]: https://github.com/ulmentflam/autosentry/releases/tag/v0.7.4

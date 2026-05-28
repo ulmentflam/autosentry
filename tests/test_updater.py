@@ -62,6 +62,63 @@ def test_detect_install_method_recognizes_homebrew(monkeypatch):
     assert detect_install_method() == "brew"
 
 
+def test_detect_install_method_uv_tool_with_symlinked_python(tmp_path, monkeypatch):
+    """Regression: a uv tool venv whose bin/python is a symlink to a base
+    interpreter *outside* the uv/tools tree must still detect as ``uv``.
+
+    The old code resolved the symlink first, which erased the ``uv/tools``
+    marker and misdetected the install as ``pip`` — fatal, since uv tool
+    venvs have no pip (`No module named pip`)."""
+    tool = tmp_path / ".local" / "share" / "uv" / "tools" / "autosentry"
+    (tool / "bin").mkdir(parents=True)
+    base = tmp_path / ".local" / "share" / "uv" / "python" / "cpython-3.13" / "bin"
+    base.mkdir(parents=True)
+    real_py = base / "python3"
+    real_py.write_text("")  # stand-in for the real interpreter
+    link = tool / "bin" / "python"
+    link.symlink_to(real_py)
+
+    monkeypatch.setattr(updater.sys, "executable", str(link))
+    monkeypatch.setattr(updater.sys, "prefix", str(tool))
+    # Even resolving the link lands under ~/.local — the trap the old code fell into.
+    monkeypatch.setattr(updater.Path, "home", classmethod(lambda cls: tmp_path))
+    assert detect_install_method() == "uv"
+
+
+def test_detect_install_method_pipx_with_symlinked_python(tmp_path, monkeypatch):
+    venv = tmp_path / ".local" / "pipx" / "venvs" / "autosentry"
+    (venv / "bin").mkdir(parents=True)
+    base = tmp_path / ".pyenv" / "versions" / "3.13.0" / "bin"
+    base.mkdir(parents=True)
+    real_py = base / "python3"
+    real_py.write_text("")
+    link = venv / "bin" / "python"
+    link.symlink_to(real_py)
+
+    monkeypatch.setattr(updater.sys, "executable", str(link))
+    monkeypatch.setattr(updater.sys, "prefix", str(venv))
+    monkeypatch.setattr(updater.Path, "home", classmethod(lambda cls: tmp_path))
+    assert detect_install_method() == "pipx"
+
+
+def test_perform_update_pip_branch_falls_back_when_pip_missing(monkeypatch):
+    """A tool venv that slipped through detection has no pip — perform_update
+    must fall back to install.sh, not shell out to a doomed `python -m pip`."""
+    monkeypatch.setattr(updater, "_has_pip", lambda py: False)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(updater, "_run", lambda cmd: ran.append(cmd) or 0)
+    fell_back: list[bool] = []
+    monkeypatch.setattr(
+        updater,
+        "_fallback_to_install_sh",
+        lambda **_kw: (fell_back.append(True), 0)[1],
+    )
+    rc = updater.perform_update(method="pip")
+    assert rc == 0
+    assert fell_back == [True]
+    assert ran == []  # never attempted `python -m pip`
+
+
 def _counting_fetch(counter: list[int], latest: str = "9.9.9"):
     def fake(*, allow_pre: bool = False, timeout: int = 10) -> str:
         counter.append(1)
