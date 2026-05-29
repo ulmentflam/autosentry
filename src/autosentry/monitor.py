@@ -210,6 +210,64 @@ class Monitor:
         time.sleep(self.cfg.process.restart_policy.cooldown_seconds)
         return True
 
+    def _restart_policy_fallback(self, det: Detection) -> None:
+        """Last-resort recovery: child is dead and no healer applied an action.
+
+        Without this, the supervisor wheel-spun over a dead child waiting for
+        a human to intervene — pegging a CPU core, never restarting, never
+        exiting, while ``ps`` showed the supervisor "alive" (issue #4).
+
+        We exercise the configured ``restart_policy`` budget the way users
+        expect from ``max_restarts``: restart the child up to that many
+        times with ``cooldown_seconds`` between attempts, then stop the
+        monitor so a service manager can decide what to do with the
+        unhealthy supervisor. Only triggered from the no-action path in
+        :meth:`_fire_detection` when the supervisor isn't running.
+        """
+        if self._stop:
+            return
+        if self.state.restarts >= self.state.max_restarts:
+            log().error(
+                f"no recovery applied for {det.detector!r} and max restarts "
+                f"({self.state.max_restarts}) reached — stopping monitor"
+            )
+            self._notify(
+                "exit",
+                "recovery exhausted",
+                f"max restarts {self.state.max_restarts} reached after unresolved {det.detector}",
+            )
+            self._stop = True
+            return
+        cooldown = self.cfg.process.restart_policy.cooldown_seconds
+        log().recovery(
+            f"restart_policy fallback for {det.detector!r} — restart "
+            f"{self.state.restarts + 1}/{self.state.max_restarts} "
+            f"after {cooldown}s cooldown (no rule + no Claude action)"
+        )
+        if cooldown:
+            time.sleep(cooldown)
+        if self._stop:
+            return
+        try:
+            status = self.supervisor.start()
+        except Exception as e:  # noqa: BLE001
+            log().error(f"restart_policy fallback failed to start child: {e}")
+            return
+        self.state.record_restart(
+            reason=f"restart_policy fallback after unresolved {det.detector}",
+            new_pid=status.pid,
+        )
+        self.state.pid = status.pid
+        # Clear so the next exit registers as a fresh transition and re-fires
+        # the detector path, rather than being treated as the same old exit.
+        self.state.last_exit_code = None
+        self._save_state()
+        self._notify(
+            "recovery",
+            f"restart_policy fallback for {det.detector}",
+            f"restart {self.state.restarts}/{self.state.max_restarts} — no healer action applied",
+        )
+
     def _fire_detection(self, det: Detection) -> None:
         if det.kind == "anomaly":
             log().anomaly(f"[{det.detector}] {det.message}")
@@ -401,6 +459,13 @@ class Monitor:
                 source_label,
                 fix_branch,
             )
+        elif not self.supervisor.status().running:
+            # No action applied (no rule matched, Claude healer timed out or
+            # is disabled, or the budget is paused) AND the child is dead.
+            # Fall back to the restart_policy budget so we don't wheel-spin
+            # over a dead child waiting for someone to intervene by hand.
+            # See issue #4. Anomaly detections on a live child don't qualify.
+            self._restart_policy_fallback(det)
 
     def _notify(
         self,

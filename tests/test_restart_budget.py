@@ -355,3 +355,80 @@ def test_rule_regression_escalation_disabled_keeps_rules(tmp_path: Path, monkeyp
 
     assert rule_called is True
     assert "detX" not in monitor._force_claude_next
+
+
+# ----- restart_policy fallback (issue #4) ----------------------------------
+
+
+def _stub_supervisor_dead(monitor) -> None:
+    """Wire the mocked supervisor to look like the child died with code 1."""
+    from autosentry.supervisors.base import ProcessStatus
+
+    monitor.supervisor.status = MagicMock(
+        return_value=ProcessStatus(running=False, pid=60740, exit_code=1)
+    )
+    monitor.supervisor.start = MagicMock(return_value=ProcessStatus(running=True, pid=60741))
+    # Zero the cooldown so the test doesn't actually sleep 60s.
+    monitor.cfg.process.restart_policy.cooldown_seconds = 0
+
+
+def test_no_recovery_falls_back_to_restart_policy_when_child_dead(tmp_path: Path, monkeypatch):
+    """Regression for issue #4: when the child exits, no rule matches, and
+    the Claude healer returns no action (timeout / disabled), the monitor
+    must exercise the restart_policy budget instead of wheel-spinning over
+    a dead child. The pre-fix behavior was a 90% CPU loop with no restart,
+    no exit, and no state transition until a human sent SIGTERM."""
+    from autosentry.detectors.base import Detection
+
+    monitor = _make_monitor(tmp_path, monkeypatch)
+    _stub_supervisor_dead(monitor)
+    # No rule + Claude disabled in cfg ⇒ outcome is None.
+    monitor.rule_healer.attempt = lambda d: None  # type: ignore[method-assign]
+    monitor.claude_healer.attempt = lambda d, **kw: None  # type: ignore[method-assign]
+
+    monitor._fire_detection(Detection(detector="exit_code", kind="error", message="exit 1"))
+
+    monitor.supervisor.start.assert_called_once()
+    assert monitor.state.restarts == 1
+    assert monitor.state.pid == 60741
+    assert monitor.state.last_exit_code is None  # cleared so next exit is a fresh transition
+    assert monitor._stop is False
+
+
+def test_no_recovery_stops_monitor_when_max_restarts_reached(tmp_path: Path, monkeypatch):
+    """Once the restart_policy budget is exhausted, the fallback must
+    stop the monitor (set _stop) so the outer run() loop exits cleanly
+    — instead of leaving a wheel-spinning supervisor for a service manager
+    to chase."""
+    from autosentry.detectors.base import Detection
+
+    monitor = _make_monitor(tmp_path, monkeypatch)
+    _stub_supervisor_dead(monitor)
+    monitor.state.restarts = monitor.state.max_restarts  # at the limit
+    monitor.rule_healer.attempt = lambda d: None  # type: ignore[method-assign]
+    monitor.claude_healer.attempt = lambda d, **kw: None  # type: ignore[method-assign]
+
+    monitor._fire_detection(Detection(detector="exit_code", kind="error", message="exit 1"))
+
+    monitor.supervisor.start.assert_not_called()
+    assert monitor._stop is True
+
+
+def test_no_recovery_no_fallback_when_child_still_running(tmp_path: Path, monkeypatch):
+    """The fallback is for dead children. An anomaly detection that fires
+    while the supervised process is healthy must NOT trigger a restart —
+    that would be a regression in its own right."""
+    from autosentry.detectors.base import Detection
+    from autosentry.supervisors.base import ProcessStatus
+
+    monitor = _make_monitor(tmp_path, monkeypatch)
+    monitor.supervisor.status = MagicMock(return_value=ProcessStatus(running=True, pid=60750))
+    monitor.supervisor.start = MagicMock()
+    monitor.rule_healer.attempt = lambda d: None  # type: ignore[method-assign]
+    monitor.claude_healer.attempt = lambda d, **kw: None  # type: ignore[method-assign]
+
+    monitor._fire_detection(Detection(detector="stall", kind="anomaly", message="quiet"))
+
+    monitor.supervisor.start.assert_not_called()
+    assert monitor.state.restarts == 0
+    assert monitor._stop is False

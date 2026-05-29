@@ -6,6 +6,26 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-05-29
+
+### Fixed
+
+- **Supervisor no longer wheel-spins at ~90% CPU after a Claude healer
+  timeout with no matching rule** (issue #4). When the child exited
+  non-zero, no rule matched the `exit_code` detector, and the Claude
+  healer timed out without applying a fix, the recovery state machine had
+  a missing transition: it sat in a tight loop with no restart, no exit,
+  and no state update — looking alive to `ps` while the supervised job
+  had been dead for hours. The "no action applied" path now falls back to
+  the configured `restart_policy` budget: restart the child up to
+  `max_restarts` times with `cooldown_seconds` between attempts, then
+  stop the monitor cleanly so a service manager (systemd / launchd /
+  supervisord) can decide what to do. Anomaly detections on a *live*
+  child are unaffected — the fallback only triggers when the child is
+  actually dead. Includes notify hooks (`recovery` and `exit`) and clears
+  `state.last_exit_code` after a fallback restart so the next exit
+  re-fires the detector path as a fresh transition.
+
 ## [0.8.3] — 2026-05-27
 
 ### Changed
@@ -670,7 +690,8 @@ by watching for the same detector to re-fire, and is recorded in a flat
   macOS, ruff lint + format check, pyrefly typecheck, pytest +
   coverage). iCloud `UF_HIDDEN` workaround baked into `make install`.
 
-[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/ulmentflam/autosentry/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.4
 [0.8.3]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.3
 [0.8.2]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.2
 [0.8.1]: https://github.com/ulmentflam/autosentry/releases/tag/v0.8.1

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autosentry"
-version = "0.8.3"
+version = "0.8.4"
 description = "Self-healing supervisor for long-running processes — watch a command, catch the failure, fix it, leave a paper trail."
 readme = "README.md"
 requires-python = ">=3.10"
