@@ -125,12 +125,27 @@ class StateStore:
         return MonitorState.model_validate(data)
 
     def save(self, state: MonitorState) -> None:
+        """Atomically write state to disk.
+
+        Tries write-tmp + ``os.replace`` first; if the tmp vanishes
+        between the two (observed on iCloud-synced directories where the
+        evictor races our rename — issue #5), falls back to a direct
+        non-atomic write so we degrade gracefully instead of failing
+        forever. The fallback prefers correctness over atomicity: better
+        to write the state than to drop it.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         payload = state.model_dump_json(indent=2)
         with self._lock:
-            with tmp.open("w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self.path)
+            try:
+                with tmp.open("w", encoding="utf-8") as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.path)
+            except FileNotFoundError:
+                with self.path.open("w", encoding="utf-8") as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())

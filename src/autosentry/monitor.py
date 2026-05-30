@@ -90,6 +90,17 @@ class Monitor:
         # skip rules and go straight to Claude — rules already failed
         # on this detector, so cycling them again is wasted work.
         self._force_claude_next: set[str] = set()
+        # Exit code captured from the supervised child for the CLI to
+        # propagate. ``None`` until the child exits.
+        self._final_exit_code: int | None = None
+        # State-save error-path bookkeeping. See ``_save_state`` —
+        # without backoff + dedup, an iCloud evictor (or anything else
+        # that races the atomic rename) can pin the monitor at ~11K
+        # error log lines per second (issue #5).
+        self._state_save_fail_count: int = 0
+        self._state_save_next_attempt: float = 0.0
+        self._state_save_last_error: str | None = None
+        self._state_save_suppressed: int = 0
 
     def _resolve_escalation_threshold(self) -> int:
         explicit = self.cfg.healing.escalate_to_claude_after
@@ -103,7 +114,13 @@ class Monitor:
 
     # ----- public lifecycle -------------------------------------------------
 
-    def run(self) -> None:
+    def run(self) -> int:
+        """Run the monitor loop. Returns the exit code the CLI should
+        propagate — the supervised child's last exit code when known,
+        otherwise 0. See issue #5: in ``one_shot`` /
+        ``restart_on_failure`` lifecycles the supervisor exits with the
+        child instead of sitting idle forever.
+        """
         # Only install signal handlers when invoked from the main thread
         # (signal.signal raises ValueError otherwise — e.g. from a test).
         if threading.current_thread() is threading.main_thread():
@@ -165,6 +182,7 @@ class Monitor:
             self.supervisor.stop()
             self._notify("exit", "autosentry monitor stopping", "")
             log().info("autosentry stopped")
+        return self._final_exit_code or 0
 
     # ----- inner loop -------------------------------------------------------
 
@@ -192,6 +210,33 @@ class Monitor:
     def _handle_exit(self, exit_code: int) -> bool:
         """Return True to continue (after restart), False to stop the monitor."""
         log().info(f"process exited with code {exit_code}")
+        self._final_exit_code = exit_code
+        # Lifecycle gate (issue #5). A clean exit used to leave the monitor
+        # ticking forever; ``one_shot`` and the default ``restart_on_failure``
+        # now stop the supervisor instead of sitting idle.
+        lifecycle = self.cfg.process.lifecycle
+        if lifecycle == "one_shot":
+            log().info(
+                f"lifecycle=one_shot — supervised work complete (exit {exit_code}); "
+                f"shutting supervisor down"
+            )
+            self._notify(
+                "exit",
+                "supervised work complete",
+                f"lifecycle=one_shot — exit code {exit_code}",
+            )
+            return False
+        if lifecycle == "restart_on_failure" and exit_code == 0:
+            log().info(
+                "lifecycle=restart_on_failure and child exited cleanly — "
+                "shutting supervisor down (set lifecycle: restart_always to keep restarting)"
+            )
+            self._notify(
+                "exit",
+                "supervised work complete",
+                "lifecycle=restart_on_failure — child exited cleanly (code 0)",
+            )
+            return False
         # exit_code detector picks this up too, but we may need to call it explicitly
         # to give a detection if the user didn't configure one. Let detectors fire on
         # status; the actual restart decision goes through the standard healer path.
@@ -487,11 +532,68 @@ class Monitor:
             except Exception as e:  # noqa: BLE001
                 log().error(f"notifier {type(notifier).__name__} failed: {e}")
 
+    # Capped exponential backoff for state-save retries. With a 0.5s base
+    # and 60s cap the failure log goes: now, +0.5s, +1s, +2s, … +60s, +60s,
+    # not 11K lines/second (issue #5).
+    _STATE_SAVE_BACKOFF_BASE = 0.5
+    _STATE_SAVE_BACKOFF_CAP = 60.0
+
     def _save_state(self) -> None:
+        now = time.monotonic()
+        if self._state_save_fail_count > 0 and now < self._state_save_next_attempt:
+            # Inside a backoff window — drop the write and count it so the
+            # next emitted error can say how many we suppressed.
+            self._state_save_suppressed += 1
+            return
         try:
             self.state_store.save(self.state)
         except OSError as e:
-            log().error(f"state save failed: {e}")
+            self._handle_state_save_failure(e)
+            return
+        if self._state_save_fail_count > 0:
+            log().info(
+                f"state save recovered after {self._state_save_fail_count} "
+                f"failure(s) (suppressed {self._state_save_suppressed} retry log lines)"
+            )
+        self._state_save_fail_count = 0
+        self._state_save_next_attempt = 0.0
+        self._state_save_last_error = None
+        self._state_save_suppressed = 0
+
+    def _handle_state_save_failure(self, exc: OSError) -> None:
+        """Apply exponential backoff and dedup repeat errors.
+
+        Without this the ``state save failed`` line can fire on every loop
+        tick. In one observed run that produced ~16M log lines in 24
+        minutes when an iCloud evictor kept removing ``state.json.tmp``
+        between write and rename (issue #5).
+        """
+        msg = f"{type(exc).__name__}: {exc}"
+        same_as_last = msg == self._state_save_last_error
+        self._state_save_fail_count += 1
+        self._state_save_last_error = msg
+        delay = min(
+            self._STATE_SAVE_BACKOFF_CAP,
+            self._STATE_SAVE_BACKOFF_BASE * (2 ** (self._state_save_fail_count - 1)),
+        )
+        self._state_save_next_attempt = time.monotonic() + delay
+        if not same_as_last:
+            # First time we've seen this error in the current burst — log it
+            # so operators see what's failing.
+            log().error(
+                f"state save failed: {exc} — retrying with backoff (next attempt in {delay:.1f}s)"
+            )
+            self._state_save_suppressed = 0
+        else:
+            # Same error as before — only emit when the backoff has actually
+            # climbed to the cap, and roll up any suppressed retries.
+            suppressed = self._state_save_suppressed
+            self._state_save_suppressed = 0
+            if delay >= self._STATE_SAVE_BACKOFF_CAP:
+                log().error(
+                    f"state save still failing ({self._state_save_fail_count} attempts, "
+                    f"{suppressed} log lines suppressed since last report): {exc}"
+                )
 
     # ----- verification + budget ------------------------------------------
 

@@ -44,12 +44,29 @@ class RestartPolicy(BaseModel):
     cooldown_seconds: int = 60
 
 
+#: How the monitor treats a child's clean exit (code 0).
+#:
+#: - ``restart_on_failure`` (default): clean exit ends the supervisor; non-zero
+#:   exit goes through the healer/restart_policy path. Most users want this —
+#:   it preserves the pre-0.8.5 healing behavior without leaving the supervisor
+#:   hanging idle after a successful one-shot run (issue #5).
+#: - ``one_shot``: any exit (clean or not) ends the supervisor. The healer is
+#:   never invoked on exit. Use when restart of any kind would be wrong.
+#: - ``restart_always``: keeps the pre-0.8.5 behavior — both clean and dirty
+#:   exits go through the healer/restart_policy path. Use when a clean exit
+#:   genuinely means "loop forever" (e.g. a poller that exits 0 between ticks).
+ProcessLifecycle = Literal["restart_always", "restart_on_failure", "one_shot"]
+
+
 class ProcessConfig(BaseModel):
     kind: ProcessKind = "local"
     command: list[str] = Field(default_factory=list)
     cwd: str = "."
     env: dict[str, str] = Field(default_factory=dict)
     restart_policy: RestartPolicy = Field(default_factory=RestartPolicy)
+    # See :data:`ProcessLifecycle`. Default ``restart_on_failure`` so a clean
+    # exit no longer leaves the monitor sitting idle indefinitely (#5).
+    lifecycle: ProcessLifecycle = "restart_on_failure"
     # Kind-specific extras live here so we don't need a discriminated union yet.
     extra: dict[str, Any] = Field(default_factory=dict)
 

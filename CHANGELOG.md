@@ -6,6 +6,39 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-05-30
+
+### Fixed
+
+- **Monitor no longer sits idle forever after a supervised child exits cleanly**
+  (issue #5, Bug 1). When `corpus-forge ingest --once` exited 0 after a 12h
+  run, the supervisor stayed alive for another 9 hours doing nothing — the
+  default `exit_code` detector correctly treated code 0 as not-an-anomaly but
+  the monitor had no exit transition for "supervised work complete." Added a
+  `process.lifecycle` knob with three modes:
+  - `restart_on_failure` (**new default**): a clean exit (code 0) ends the
+    supervisor; non-zero still routes through the healer / restart_policy
+    path the same as before.
+  - `one_shot`: any exit ends the supervisor.
+  - `restart_always`: the pre-0.8.5 behavior — both clean and dirty exits
+    route through the healer. Opt in only if you genuinely want loop-forever
+    semantics.
+
+  The supervisor now propagates the child's exit code to the CLI, so a
+  parent service manager sees the real result instead of always seeing 0.
+
+- **State-save error path no longer hot-loops** (issue #5, Bug 2). After the
+  silent idle period in Bug 1, autosentry hit `state save failed: [Errno 2]`
+  on the atomic rename (an iCloud sync evictor was racing the
+  `state.json.tmp` → `state.json` rename) and emitted **15,978,646** copies
+  of that line in 24 minutes. Two changes:
+  - `StateStore.save` now falls back to a direct (non-atomic) write when
+    `os.replace` raises `FileNotFoundError`, so the save still lands.
+  - `Monitor._save_state` wraps repeated failures with capped exponential
+    backoff (0.5s → 60s) and per-message dedup. The first failure logs once;
+    subsequent calls inside the backoff window are dropped and counted; a
+    recovery log line reports how many writes were suppressed.
+
 ## [0.8.4] — 2026-05-29
 
 ### Fixed

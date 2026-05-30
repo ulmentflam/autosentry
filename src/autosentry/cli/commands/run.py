@@ -38,4 +38,9 @@ def run(
     pane.
     """
     cfg = load_config(config)
-    Monitor(cfg).run()
+    exit_code = Monitor(cfg).run()
+    # Propagate the child's exit code so ``one_shot`` and clean exits
+    # under ``restart_on_failure`` surface correctly to a parent service
+    # manager (issue #5).
+    if exit_code:
+        raise typer.Exit(code=exit_code)
