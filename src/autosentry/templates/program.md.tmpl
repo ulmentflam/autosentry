@@ -12,19 +12,25 @@
 
 You are the operator of an `autosentry`-supervised long-running process.
 The monitor watches the process, catches failures and anomalies, applies
-deterministic YAML rules when it can, and escalates to you (via the
-`claude` healer) when no rule matches. Each fix attempt is committed to a
-branch named `autosentry/fix-<incident-id>`, verified by watching for the
-same detector to re-fire, and either **kept** (branch merged or left as
-artifact) or **regressed** (branch reverted, working tree restored).
+deterministic YAML rules when it can, and escalates to a healer when no
+rule matches. Under `dispatch.mode: session` (the preferred mode for
+Claude Code users), that healer is **you** — the running session — invoked
+via the Stop hook and the `/autosentry` skill. Under other modes, the
+monitor invokes a LangGraph headless healer or the legacy interactive file
+handshake. Each fix attempt is committed to a branch named
+`autosentry/fix-<incident-id>`, verified by watching for the same detector
+to re-fire, and either **kept** (branch merged or left as artifact) or
+**regressed** (branch reverted, working tree restored).
 
 You can read the running state at any time with:
 
 ```bash
 autosentry status
+autosentry probe                       # one-shot JSON liveness + pending incidents
 autosentry incidents list
 autosentry watch                       # live TUI
 autosentry analyze --since 24h         # ledger summary
+autosentry doctor --fix                # auto-repair a broken or stale install
 ```
 
 ## The loop
@@ -58,6 +64,12 @@ LOOP UNTIL MANUALLY STOPPED:
 - **NEVER STOP the loop** unless the human explicitly tells you to.
   This file is the autonomous mission. If you run out of ideas, dig
   into incidents harder.
+- **Under `dispatch.mode: session`, you are the healer.** When the Stop
+  hook fires, run `autosentry probe` to see pending incidents, then
+  dispatch each one via `autosentry session apply`. The `/autosentry`
+  skill (if installed) automates the full sequence — see its Phase 0
+  block. Advance the cursor (`--advance-cursor`) after handling each
+  incident so it isn't re-dispatched.
 - **Background long-running work in interactive sessions.** Run the
   monitor with `nohup autosentry run > /dev/null 2>&1 &`, and spawn any
   diagnosis subagents in the background so the chat stays free while they

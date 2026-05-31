@@ -13,13 +13,17 @@ under `.claude/commands/`, `.opencode/command/`, `.codex/prompts/`,
 A self-healing supervisor for long-running processes. The monitor
 watches one command (an ML training run, a service, an ETL job), reads
 its log stream and process state, applies deterministic YAML rules
-when it knows the failure mode, and escalates to an LLM (Claude Code
-by default) when it doesn't. Each event becomes a folder under
-`.autosentry/incidents/`. Each fix attempt becomes a row in
+when it knows the failure mode, and escalates to a healer when it
+doesn't. The healer is one of: the running Claude Code session (via
+session dispatch, free), a LangGraph headless LLM graph (BYO API key),
+or the legacy interactive file handshake. Each event becomes a folder
+under `.autosentry/incidents/`. Each fix attempt becomes a row in
 `.autosentry/attempts.tsv`. Claude-driven fixes land on their own
 branch (`autosentry/fix-<incident-id>`) and only stick if they
 **verify** — the same detector doesn't re-fire inside the verify
-window.
+window. Significant events (recurring patterns, regressions,
+exhaustions) are also written as wikilinked markdown notes to
+`.autosentry/vault/`, viewable in Obsidian or via `autosentry web`.
 
 Repository: <https://github.com/ulmentflam/autosentry>.
 
@@ -33,13 +37,21 @@ command -v autosentry >/dev/null && autosentry --version       # phase ≥ 1
 { [ -f .autosentry/autosentry.yaml ] || [ -f autosentry.yaml ]; } && echo configured   # phase ≥ 2
 [ -f .autosentry/state.json ] && cat .autosentry/state.json    # phase ≥ 3
 # phase 4 = phase 3 + the pid in state.json is alive
-ls -la .autosentry/recovery_request.md 2>/dev/null              # phase 5?
+autosentry probe 2>/dev/null                                    # phase 0? (session dispatch)
+ls -la .autosentry/recovery_request.md 2>/dev/null              # phase 5? (legacy handshake)
 autosentry update --check                                       # newer release?
 ```
 
-**Phase 5 is the highest-priority.** When the monitor escalates a
-detection in interactive mode it writes
-`.autosentry/recovery_request.md` and blocks waiting for
+**Phase 0 is the highest-priority** when `dispatch.mode: session` is
+configured. The Stop hook fires `autosentry probe --inject-prompt
+--quiet` on session end; if there are pending incidents, it re-engages
+the session. Handle pending incidents *before* anything else — see
+[Phase 0 — session dispatch](#phase-0--session-dispatch-pending-incidents)
+below.
+
+**Phase 5 is the highest-priority for legacy setups** (`dispatch.mode:
+builtin`). When the monitor escalates a detection in interactive mode it
+writes `.autosentry/recovery_request.md` and blocks waiting for
 `.autosentry/recovery_response.md`. Handle that *before* anything else.
 
 **Keep the session responsive — background long-running work.** In an
@@ -63,7 +75,60 @@ Homebrew. Don't run the upgrade yourself unless the user asks; it can
 restart the CLI mid-session. Use `--json` if you'd rather parse the
 result (`{"current","latest","is_outdated"}`).
 
-## Phase 5 — recovery request open
+## Phase 0 — session dispatch (pending incidents)
+
+Applies when `dispatch.mode: session` is configured. The Stop hook
+auto-fires `autosentry probe --inject-prompt --quiet` after each session
+turn; if the probe finds pending incidents it re-blocks the session.
+
+```bash
+autosentry probe      # check liveness + pending incidents (structured JSON)
+```
+
+Probe output shape:
+```json
+{
+  "monitor": { "pid_alive": true, "stale": false },
+  "pending_incidents": [
+    { "id": "…", "detector": "oom", "rule_match": "oom_halve_batch",
+      "suggested_action": "restart_with_env" }
+  ]
+}
+```
+
+For each pending incident:
+
+1. If `rule_match` is set → dispatch the rule's action:
+   ```bash
+   autosentry session apply --incident <id> --action restart_with_env \
+     --set BATCH_SIZE=4 --rule oom_halve_batch
+   ```
+2. If no rule match + a stack trace is present → spawn a Task subagent
+   **in the background** to diagnose, then call `session apply` with the
+   result.
+3. Simple restarts (no env change, no code fix):
+   ```bash
+   autosentry session apply --incident <id> --action restart
+   ```
+4. Advance the cursor after each incident:
+   ```bash
+   autosentry probe --advance-cursor <id>
+   ```
+
+If `monitor.pid_alive` is false, restart the monitor first:
+```bash
+nohup autosentry run > /dev/null 2>&1 &
+```
+
+**Never modify `.autosentry/session_action_cursor` directly.** Use the
+CLI. The monitor drains `session_actions.jsonl` on each tick and
+advances the cursor itself.
+
+## Phase 5 — recovery request open (legacy handshake)
+
+Applies when `dispatch.mode: builtin` (the default) and
+`healing.claude.mode: interactive`. For session-dispatch users see
+[Phase 0](#phase-0--session-dispatch-pending-incidents) above.
 
 When the request file is newer than the response file:
 
@@ -106,6 +171,15 @@ fallback: `pip install --user autosentry`.
 - **`process.command`** — argv list to supervise. No shell syntax.
 - **`process.env`** — env vars; `$VAR` / `${VAR}` interpolation supported.
 - **`process.restart_policy.max_restarts`** — the give-up threshold.
+- **`process.lifecycle`** — `restart_on_failure` (default; clean exit
+  ends the supervisor), `one_shot` (any exit ends it), or
+  `restart_always` (pre-0.8.5 behavior). Use `one_shot` for batch jobs;
+  `restart_on_failure` for services that should stay up after failures.
+- **`dispatch.mode`** — `builtin` (default; monitor runs the healer) or
+  `session` (**preferred for Claude Code users**; the running session
+  dispatches via the `/autosentry` skill, free under the Claude Code
+  subscription). `autosentry init` writes the Stop hook into
+  `.claude/settings.local.json` automatically.
 - **`config_snapshots`** — files copied into every incident folder.
   Include the run config, the `.env`, and any pipeline definition.
 - **`detectors`** — start with `pattern` regexes for known failure
@@ -113,7 +187,14 @@ fallback: `pip install --user autosentry`.
   `stall` with `metric_regex` matching the user's progress format, and
   `exit_code`.
 - **`rules`** — pair each detector to an action. Tried in order, first
-  match wins; everything else falls through to Claude.
+  match wins; everything else falls through to the healer.
+- **`healing.claude.mode`** — `auto` (default; resolves to `interactive`
+  when the skill is installed, `subprocess` when `claude` is on PATH), or
+  explicitly `interactive`, `langgraph`, or `subprocess` (deprecated).
+  For Claude Code users, `dispatch.mode: session` supersedes this.
+- **`healing.langgraph`** — configure for headless deployments without
+  Claude Code. Set `provider` (`anthropic`/`openai`/`google`) and the
+  matching API key env var.
 - **`healing.git.auto_merge`** — leave `false` (default) so the user
   manually merges verified fix branches. Set `true` only if the agent
   is trusted to land code unattended.
@@ -142,11 +223,13 @@ match the log format (read the log and adjust regexes) or
 
 ```bash
 autosentry status                    # snapshot of state.json
+autosentry probe                     # one-shot JSON liveness + pending incidents
 autosentry watch                     # live TUI: state + incidents + log tail
-autosentry web                       # browse incidents in a browser
+autosentry web                       # browse incidents in a browser (includes /vault)
 autosentry incidents list            # last N incidents
 autosentry incidents show <id>       # full report.md
 autosentry analyze --since 24h       # ledger summary
+autosentry doctor --fix              # auto-repair broken or stale installs
 autosentry update --check            # is there a newer release?
 ```
 
@@ -217,6 +300,33 @@ timestamp  incident_id  detector  source  branch  status  duration_seconds  desc
 `--json` for machine reading. Run periodically; propose new YAML
 rules whenever the same detector has escalated to Claude 3+ times
 with a similar fix pattern.
+
+### The vault
+
+autosentry writes human-readable, wikilinked markdown notes to
+`.autosentry/vault/` for significant events:
+
+```
+.autosentry/vault/
+├── index.md
+├── runs/<run-id>.md / runs/<run-id>/child-<n>.md
+├── incidents/<id>.md / incidents/<id>/attempt-<n>.md
+├── detectors/<name>.md
+├── patterns/<slug>.md          ← recurring failure modes (≥ pattern_threshold matches)
+├── regressions/<incident-id>.md
+└── exhaustions/<run-id>.md
+```
+
+Browse the vault in Obsidian (open `.autosentry/vault/` as a vault) or
+via `autosentry web` at `/vault` (note index), `/vault/<subdir>/<file>`
+(individual notes), and `/vault/graph` (Mermaid DAG of the full run →
+incident → attempt chain). Pattern notes are created once
+`vault.pattern_threshold` (default 3) matching incidents accumulate —
+patterns use trace-hash matching (normalized SHA-256) plus
+message-similarity grouping.
+
+If the vault directory is deleted or corrupted, run
+`autosentry doctor --fix` to rebuild it from `incidents/index.jsonl`.
 
 ### High-leverage moves
 
@@ -293,6 +403,14 @@ common silent failure mode in long-running jobs.
   `--no-gpg-sign` for automated commits to avoid stalling on 1Password
   / SSH-key prompts. Sign the final merge commit by hand when keeping
   a fix.
+- **`healing.claude.mode: subprocess` logs a deprecation nudge**: this
+  mode is soft-deprecated since 0.10.0. Migrate to `dispatch.mode:
+  session` (free, Claude Code subscription) or `healing.claude.mode:
+  langgraph` (headless, BYO API key).
+- **Broken or stale install after an upgrade**: run
+  `autosentry doctor --fix`. It rebuilds the vault, rotates corrupt
+  state files, re-installs the Stop hook if missing, and explains any
+  issues it can't auto-fix (missing API keys, deprecated modes).
 
 ## Style
 

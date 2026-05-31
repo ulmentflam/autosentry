@@ -45,6 +45,7 @@ their way out of any problem the supervisor can't.
 - [Fix branches and outcome verification](#fix-branches-and-outcome-verification)
 - [Notifications](#notifications)
 - [Launching from your AI editor](#launching-from-your-ai-editor)
+- [Repairing old or broken installs](#repairing-old-or-broken-installs)
 - [Update](#update)
 - [Status & roadmap](#status--roadmap)
 - [Comparison](#comparison)
@@ -250,6 +251,9 @@ autosentry web                             # browse incidents in your browser
 autosentry status                          # one-shot state dump
 autosentry incidents list                  # CLI incident browser
 autosentry incidents show 2026-05-26T14-32-10Z-error-traceback
+autosentry probe                           # one-shot JSON liveness + pending incidents
+autosentry probe --inject-prompt           # emit a Stop-hook payload (used by session dispatch)
+autosentry doctor --fix                    # auto-repair broken or stale installs
 ```
 
 Bidirectional Slack (separate shell — the monitor stays offline-safe):
@@ -459,6 +463,8 @@ The top-level shape:
 | `process.env`      | dict[str,str] | `{}`                             | env vars; values can interpolate `$VAR` / `${VAR}` |
 | `process.restart_policy.max_restarts` | int | `10`                 | when exceeded, monitor gives up |
 | `process.restart_policy.cooldown_seconds` | int | `60`             | wait before restart |
+| `process.lifecycle`                   | enum          | `restart_on_failure`             | `restart_on_failure` (clean exit ends the supervisor; default since 0.8.5), `one_shot` (any exit ends it), `restart_always` (both clean and dirty exits route through the healer — pre-0.8.5 behavior) |
+| `dispatch.mode`                       | enum          | `builtin`                        | `builtin` (monitor runs the healer) or `session` (Claude Code session dispatches via `/autosentry` skill — preferred for Claude Code users; free) |
 | `monitor.poll_interval_seconds` | int | `30`                       | tick rate for status checks and tick-driven detectors |
 | `monitor.log_dir`  | str           | `.autosentry/logs`               | structured log + supervised process log live here |
 | `monitor.log_excerpt_lines` | int  | `200`                            | lines per incident `log_excerpt.txt` |
@@ -469,11 +475,18 @@ The top-level shape:
 | `detectors`        | list          | see below                        | what to watch for |
 | `rules`            | list          | `[]`                             | YAML rule engine; first match wins |
 | `healing.claude.enabled` | bool/str| `auto`                           | `true`/`false`/`auto`; `auto` enables when skill or CLI is present |
-| `healing.claude.mode`    | enum    | `auto`                           | `auto`/`subprocess`/`interactive`; see [healer modes](#healer-modes) |
+| `healing.claude.mode`    | enum    | `auto`                           | `auto`/`interactive`/`langgraph`/`subprocess`; see [healer modes](#healer-modes). `subprocess` is soft-deprecated since 0.10.0. |
 | `healing.claude.command` | list    | `["claude", "--print"]`          | how to invoke Claude in subprocess mode |
 | `healing.claude.timeout_seconds` | int | `600`                       | Claude's budget per incident |
 | `healing.claude.request_path` | str | `.autosentry/recovery_request.md`| interactive handshake: file the monitor writes |
 | `healing.claude.response_path` | str | `.autosentry/recovery_response.md`| interactive handshake: file the subagent writes |
+| `healing.langgraph.enabled` | bool | `false`                           | enable the LangGraph headless healer |
+| `healing.langgraph.provider` | enum | `anthropic`                      | `anthropic` (`ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`), or `google` (`GOOGLE_API_KEY`) |
+| `healing.langgraph.model` | str    | provider default                  | model name passed to the provider |
+| `healing.langgraph.cross_check` | bool | `false`                        | run a second LLM on the diagnosis before finalizing; can use a different provider |
+| `healing.langgraph.max_steps` | int | `10`                             | maximum graph steps before the diagnosis is finalized |
+| `healing.langgraph.temperature` | float | `0.2`                         | LLM temperature |
+| `healing.langgraph.request_timeout_seconds` | int | `120`              | per-LLM-call timeout |
 | `healing.escalate_to_claude_after` | int | `max_restarts // 5` (≥ 1)    | force-escalate to the agent after N unverified rule restarts (default = 2 with `max_restarts=10`) |
 | `healing.escalate_on_rule_regression` | bool | `true`                    | if a rule-based fix regresses, force the agent on the next attempt for that detector |
 | `healing.verify_window_seconds` | int | `600`                          | window in which a re-fire counts as a regression |
@@ -481,6 +494,13 @@ The top-level shape:
 | `notifiers`        | list          | `[{kind: log}]`                  | event sinks |
 | `state_path`       | str           | `.autosentry/state.json`         | persistent state location |
 | `incidents_dir`    | str           | `.autosentry/incidents`          | where incident folders go |
+| `vault.enabled`    | bool          | `true`                           | set `false` to disable all vault writes |
+| `vault.path`       | str           | `.autosentry/vault`              | where vault notes are written |
+| `vault.pattern_threshold` | int   | `3`                              | number of matching incidents before a `patterns/` note is created |
+| `vault.similarity_threshold` | float | `0.2`                        | Levenshtein distance fraction for message-similarity grouping (0 = exact match only) |
+| `vault.narratives.enabled` | bool | `false`                          | LLM-generated prose for first-occurrence significant events (patterns, regressions, exhaustions). Off by default. |
+| `vault.narratives.provider` | enum | `anthropic`                     | same provider matrix as `healing.langgraph` — `anthropic`, `openai`, or `google` |
+| `vault.narratives.model` | str    | provider default                  | model name passed to the narrator |
 
 ---
 
@@ -531,17 +551,79 @@ modes — picked automatically based on what's installed (see
 
 ### Healer modes
 
-- **subprocess** — spawn `claude --print` as a headless process,
-  pipe the prompt in, capture stdout. Works without an open Claude
-  Code session; needs the `claude` CLI on PATH. Use in CI, k8s, on
-  air-gapped boxes.
-- **interactive** — write a recovery request file with YAML
-  frontmatter (incident id, detector, recommended subagent type),
-  then block waiting for a response. The `/autosentry` slash command
-  running in your open Claude Code session sees the request, **spawns
-  a subagent via the Task tool** with the incident's full context, and
-  writes the response (typically via `autosentry healer respond`).
-  Keeps your main session clean; the subagent owns the diagnosis.
+Four runtimes exist, each with a different billing model:
+
+| runtime                              | billing                                   | when to use                                  |
+|--------------------------------------|-------------------------------------------|----------------------------------------------|
+| `dispatch.mode: session`             | **Free** — runs under Claude Code sub.    | **Preferred** for Claude Code users.         |
+| `healing.claude.mode: interactive`   | **Free** — same Claude Code session.      | Legacy handshake; superseded by `session`.   |
+| `healing.claude.mode: subprocess`    | **Per-call** — `claude --print` to API.   | Superseded; soft-deprecated in 0.10.0.       |
+| `healing.claude.mode: langgraph`     | **Per-call** — your provider key.         | Headless deployments (no Claude Code).       |
+
+**`dispatch.mode: session` (preferred for Claude Code users)** — the
+Claude Code session itself is the healer. Under this mode the monitor
+still detects failures, writes incident folders, and maintains the
+heartbeat — but it doesn't invoke any healer internally. Instead, it
+writes `.autosentry/session_dispatch_request` so the Stop hook (auto-
+installed by `autosentry init`) can wake the running session. The
+`/autosentry` skill then calls `autosentry probe`, walks each pending
+incident, and dispatches the fix via `autosentry session apply`.
+Everything runs inside the subscription you're already paying for.
+Set `dispatch: { mode: session }` to opt in.
+
+```yaml
+dispatch:
+  mode: session   # default: builtin
+```
+
+The `restart_policy` safety net still runs under session mode — if
+the child dies and no session is active to react, the supervisor still
+auto-restarts up to `max_restarts` times.
+
+**`healing.claude.mode: langgraph` (headless, BYO provider)** — a
+multi-step LangGraph diagnosis graph that runs without any Claude Code
+session. The graph: `prepare_context → diagnose (LLM + tools:
+read_file / grep_repo / view_log_excerpt) → optional cross_check →
+finalize`, bounded by `max_steps`. Supports three providers via BYO API
+key:
+
+- `anthropic` (`ANTHROPIC_API_KEY`) — Anthropic Claude models
+- `openai` (`OPENAI_API_KEY`) — OpenAI models
+- `google` (`GOOGLE_API_KEY`) — Google Gemini models
+
+Cross-check can mix providers (e.g. Claude diagnoses, GPT validates).
+Missing API keys surface a clean error and fall back to the
+`restart_policy` safety net — no stack traces.
+
+```yaml
+healing:
+  claude:
+    mode: langgraph
+  langgraph:
+    enabled: true
+    provider: anthropic    # or openai, google
+    model: claude-opus-4-5
+    cross_check: false
+    max_steps: 10
+    temperature: 0.2
+    request_timeout_seconds: 120
+```
+
+**`healing.claude.mode: interactive` (legacy file handshake)** — write
+a recovery request file with YAML frontmatter (incident id, detector,
+recommended subagent type), then block waiting for a response. The
+`/autosentry` slash command running in your open Claude Code session
+sees the request, **spawns a subagent via the Task tool** with the
+incident's full context, and writes the response (typically via
+`autosentry healer respond`). Keeps your main session clean; the
+subagent owns the diagnosis. Superseded by `dispatch.mode: session` for
+new setups.
+
+**`healing.claude.mode: subprocess` (deprecated)** — spawn
+`claude --print` as a headless process, pipe the prompt in, capture
+stdout. Still functional in 0.10.x but logs a one-line nudge at
+config-load directing you to `dispatch.mode: session` (free) or
+`healing.claude.mode: langgraph` (multi-step + provider choice).
 
 #### The file handshake (interactive mode)
 
@@ -581,6 +663,10 @@ Mode resolution (when `mode: auto`):
 
 `autosentry doctor` reports the resolved mode so you can see which one
 will actually run.
+
+> For new setups using Claude Code, skip `mode: auto` entirely and set
+> `dispatch: { mode: session }` instead. Session dispatch is free,
+> doesn't require the `claude` CLI on PATH, and doesn't consume API credits.
 
 ### Subagents
 
@@ -832,6 +918,43 @@ per-tool wrappers either embed it or reference it.
 
 ---
 
+## Repairing old or broken installs
+
+`autosentry doctor --fix` runs idempotent auto-repairs across 11 checks.
+Run it on any install that's misbehaving, was partially initialized, or
+was upgraded from a pre-0.8 version without a migration pass:
+
+```bash
+autosentry doctor --fix
+```
+
+What each check repairs:
+
+| check                      | what it catches                              | repair                                  |
+|----------------------------|----------------------------------------------|-----------------------------------------|
+| legacy config              | pre-0.8 root-level `autosentry.yaml`         | move to `.autosentry/`                  |
+| `.autosentry` tree         | missing `incidents/` / `logs/` / `prompts/`  | recreate dirs                           |
+| vault dir                  | missing `.autosentry/vault/`                 | rebuild from `incidents/index.jsonl`    |
+| `state.json`               | unparseable JSON                             | rotate aside as `.broken-<ts>`          |
+| `attempts.tsv`             | malformed rows                               | rotate aside                            |
+| `incidents/index.jsonl`    | malformed JSONL lines                        | rotate aside                            |
+| stop hook                  | `dispatch.mode: session` without hook        | install via `autosentry hooks install`  |
+| langgraph api keys         | provider key missing                         | (no auto-fix; surfaced loud)            |
+| recovery request           | orphaned `recovery_request.md` blocking runs | rotate to `.stale-<ts>`                 |
+| `claude.mode` steering     | deprecated `subprocess` mode                 | (no fix; explains alternatives)         |
+
+`--fix` is idempotent — running it twice is a no-op the second time.
+Sensitive things (API keys, config edits) are never auto-changed.
+
+You can also manage the Stop hook independently:
+
+```bash
+autosentry hooks install    # install the Stop hook into .claude/settings.local.json
+autosentry hooks remove     # remove it
+```
+
+---
+
 ## Update
 
 ```bash
@@ -886,6 +1009,14 @@ the [`CHANGELOG`](./CHANGELOG.md) calls them out.
 | Fix-branch isolation + outcome verification             | **stable**    |
 | `attempts.tsv` ledger + `autosentry analyze`            | **stable**    |
 | `program.md` operator mission statement                 | **stable**    |
+| Session dispatch (`dispatch.mode: session`)             | **stable**    |
+| `autosentry probe` + Stop hook + `hooks install/remove` | **stable**    |
+| `autosentry session apply` action queue                 | **stable**    |
+| LangGraph headless healer (Anthropic/OpenAI/Google)     | **stable**    |
+| Obsidian-compatible markdown vault                      | **stable**    |
+| `autosentry web` vault routes + Mermaid graph           | **stable**    |
+| `autosentry doctor --fix` auto-repair                   | **stable**    |
+| LLM vault narratives (`vault.narratives`)               | **stable**    |
 | PyPI release automation                                 | planned       |
 | Slack interactive buttons (approve/abort UI)            | planned       |
 
@@ -991,6 +1122,12 @@ is a separate, optional process and is mtime-gated — when no
 notifications are queued, its loop is a single `stat()`. There's no
 background polling of remote services and no persistent network
 connection.
+
+**My supervisor keeps running after the supervised process exits cleanly (code 0).**
+This was the pre-0.8.5 default (`restart_always`). Set `process.lifecycle:
+restart_on_failure` (the new default) — a clean exit ends the supervisor; a
+non-zero exit still routes through the healer. For batch one-shot jobs, use
+`process.lifecycle: one_shot` so any exit (clean or dirty) ends the supervisor.
 
 **iCloud Drive keeps breaking my venv.**
 See the [install](#install) note. Either point the venv outside iCloud or
