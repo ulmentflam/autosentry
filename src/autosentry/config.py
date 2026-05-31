@@ -363,9 +363,39 @@ class NotifierSpec(BaseModel):
     url: str | None = None
 
 
+class VaultConfig(BaseModel):
+    """Obsidian-compatible markdown vault of significant supervisor events.
+
+    Inspired by claude-obsidian. The monitor writes human-readable
+    summaries to ``.autosentry/vault/`` as wikilinked markdown notes
+    so the operator can browse the supervisor's history as a graph —
+    runs branch into child restarts; incidents branch into attempt
+    chains; recurring failures aggregate into pattern notes that link
+    back to every incident that shares the trace.
+
+    The vault is *derived* from incidents + the attempts ledger — it
+    doesn't store anything that isn't already on disk somewhere. Open
+    ``.autosentry/vault/`` in Obsidian directly; v0.12.0 will also
+    render it under ``autosentry web``.
+    """
+
+    enabled: bool = True
+    path: str = ".autosentry/vault"
+    # Number of incidents with the same detector + similar message
+    # before autosentry creates a ``patterns/<slug>.md`` aggregator
+    # note. Lower for tight feedback (every detector quickly gets a
+    # pattern note); higher to wait for actual recurrence.
+    pattern_threshold: int = 3
+    # Maximum Levenshtein distance (as a fraction of the longer
+    # message length) for two messages to count as "similar". 0.3
+    # tolerates timestamps and small numeric drift; 0.1 is strict.
+    similarity_threshold: float = 0.3
+
+
 class AutoSentryConfig(BaseModel):
     process: ProcessConfig
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
+    vault: VaultConfig = Field(default_factory=VaultConfig)
     config_snapshots: list[str] = Field(default_factory=list)
     source_explode: SourceExplodeConfig = Field(default_factory=SourceExplodeConfig)
     detectors: list[DetectorSpec] = Field(default_factory=list)

@@ -22,7 +22,7 @@ from autosentry import git_ops
 from autosentry.config import AutoSentryConfig
 from autosentry.detectors import Detection, build_detectors
 from autosentry.git_ops import FixBranch
-from autosentry.healers import ClaudeHealer, RuleHealer
+from autosentry.healers import ClaudeHealer, HealerOutcome, RuleHealer
 from autosentry.inbox import apply_commands as apply_inbox_commands
 from autosentry.incidents import IncidentStore, IncidentWrite, SourceExploder
 from autosentry.ledger import Attempt, AttemptsLedger, now_iso
@@ -32,6 +32,8 @@ from autosentry.notifiers.base import Notification
 from autosentry.state import MonitorState, StateStore
 from autosentry.supervisors import supervisor_for
 from autosentry.supervisors.base import LogLine
+from autosentry.vault import VaultStore
+from autosentry.vault.patterns import PatternIndex
 
 # Default paths for the dispatcher's coordination files. The monitor reads
 # the inbox each tick and touches the marker on each detection fire — that's
@@ -56,6 +58,25 @@ class Monitor:
         self.detectors = build_detectors(cfg.detectors)
         self.rule_healer = RuleHealer(cfg.rules)
         self.claude_healer = ClaudeHealer(cfg)
+        # Vault writer + pattern detector. Wired in at the same lifecycle
+        # points where the monitor writes incidents / records ledger
+        # updates, so the markdown vault stays in sync with the
+        # incidents/ + attempts.tsv on-disk state.
+        self.vault: VaultStore | None = None
+        self.patterns: PatternIndex | None = None
+        if cfg.vault.enabled:
+            vault_root = cfg.resolve(cfg.vault.path)
+            self.vault = VaultStore(vault_root)
+            self.patterns = PatternIndex(
+                vault_root / ".patterns.json",
+                threshold=cfg.vault.pattern_threshold,
+                similarity=cfg.vault.similarity_threshold,
+            )
+        # Per-run vault state: the run id + the attempt counter per
+        # incident so attempt notes get stable sub-paths.
+        self._vault_run_id: str | None = None
+        self._vault_child_index = 0
+        self._vault_attempt_counters: dict[str, int] = {}
         self.exploder = SourceExploder(
             context_lines=cfg.source_explode.context_lines,
             skip_paths=cfg.source_explode.skip_paths,
@@ -74,8 +95,10 @@ class Monitor:
         self.inbound_marker_path = cfg.resolve(_INBOUND_MARKER_PATH)
         # Attempts ledger + outcome verification state.
         self.attempts = AttemptsLedger.load(cfg.resolve(_ATTEMPTS_PATH))
-        # Pending verifications: detector → (deadline_monotonic, incident_id, source, branch).
-        self._pending_verify: dict[str, tuple[float, str, str, FixBranch | None]] = {}
+        # Pending verifications: detector → (deadline_monotonic,
+        # incident_id, source, branch, attempt_index). attempt_index
+        # lets vault resolution updates land on the right note.
+        self._pending_verify: dict[str, tuple[float, str, str, FixBranch | None, int]] = {}
         # Rolling per-detector attempt timestamps for budget enforcement.
         self._recent_attempts: dict[str, list[float]] = {}
         # When a budget burns through, remember which detectors are paused.
@@ -138,6 +161,23 @@ class Monitor:
         self.state.pid = status.pid
         self.state.started_at = status.started_at
         self._save_state()
+        # Vault: write the supervisor-session note + the initial child-
+        # run note for this first process spawn. Subsequent restarts
+        # record their own child-run nodes from the action-apply path.
+        if self.vault is not None and self.state.started_at:
+            self._vault_run_id = self._vault_run_id_for(self.state.started_at)
+            self.vault.record_run_start(
+                run_id=self._vault_run_id,
+                supervisor_kind=self.cfg.process.kind,
+                command=self.cfg.process.command,
+                started_at=self.state.started_at,
+                cwd=str(self.cfg.resolve(self.cfg.process.cwd)),
+            )
+            self._record_vault_child_restart(
+                pid=status.pid,
+                started_at=status.started_at or self.state.started_at,
+                reason="initial start",
+            )
 
         line_iter = self.supervisor.iter_log_lines()
         last_tick = time.monotonic()
@@ -335,6 +375,7 @@ class Monitor:
                 "max restarts reached",
                 f"giving up after {self.state.restarts} restart(s)",
             )
+            self._record_vault_exhaustion(detector=None)
             return False
         # The exit_code detector will have already fired during the tick above. If
         # no recovery happened, give the user a chance to manually intervene.
@@ -367,6 +408,7 @@ class Monitor:
                 "recovery exhausted",
                 f"max restarts {self.state.max_restarts} reached after unresolved {det.detector}",
             )
+            self._record_vault_exhaustion(detector=det.detector)
             self._stop = True
             return
         cooldown = self.cfg.process.restart_policy.cooldown_seconds
@@ -507,6 +549,11 @@ class Monitor:
         self.last_incident_dir = folder
         if det.kind == "anomaly":
             self.state.record_anomaly(det.detector, det.message, incident_id=incident_id)
+        # Vault: classify against the pattern index, then write the
+        # incident note + (if the pattern threshold just got crossed)
+        # the pattern aggregator. Best-effort — failures log and the
+        # supervisor keeps running.
+        self._record_vault_incident(det, incident_id, folder, fired_at=_now_iso())
         # Under session-dispatch mode, signal the interactive session
         # that there's a new pending incident to handle. The mtime of
         # this marker is the wake signal; the incident folder itself
@@ -571,6 +618,17 @@ class Monitor:
             )
             self._record_attempt_timestamp(det.detector)
 
+            # Vault: write the attempt note. Increments the per-
+            # incident attempt counter so attempt indices are stable
+            # across multiple healer attempts on the same incident.
+            attempt_index = self._next_attempt_index(incident_id)
+            self._record_vault_attempt_start(
+                incident_id=incident_id,
+                attempt_index=attempt_index,
+                outcome=outcome,
+                fix_branch=fix_branch,
+            )
+
             try:
                 self.supervisor.apply_action(outcome.action)
                 self.state.record_restart(
@@ -581,6 +639,13 @@ class Monitor:
                 )
                 self.state.pid = self.supervisor.status().pid
                 self._save_state()
+                # The action just kicked off a new child process — log
+                # that as a child-restart node in the vault.
+                self._record_vault_child_restart(
+                    pid=self.supervisor.status().pid,
+                    started_at=_now_iso(),
+                    reason=f"healer fix for {incident_id}",
+                )
             except Exception as e:  # noqa: BLE001
                 log().error(f"apply_action failed: {e}")
                 self.attempts.update(
@@ -588,6 +653,12 @@ class Monitor:
                     source_label,
                     status="crashed",
                     duration_seconds=time.monotonic() - apply_started,
+                )
+                self._record_vault_attempt_resolution(
+                    incident_id=incident_id,
+                    attempt_index=attempt_index,
+                    status="crashed",
+                    notes=f"apply_action raised: {e}",
                 )
                 if fix_branch is not None:
                     git_ops.discard_branch(
@@ -605,6 +676,7 @@ class Monitor:
                 incident_id,
                 source_label,
                 fix_branch,
+                attempt_index,
             )
         elif not self.supervisor.status().running:
             # No action applied (no rule matched, Claude healer timed out or
@@ -710,16 +782,27 @@ class Monitor:
             return
         now = time.monotonic()
         expired: list[str] = []
-        for detector_name, (deadline, _, _, _) in self._pending_verify.items():
+        for detector_name, (deadline, _, _, _, _) in self._pending_verify.items():
             if now >= deadline:
                 expired.append(detector_name)
         for detector_name in expired:
-            deadline, incident_id, source, fix_branch = self._pending_verify.pop(detector_name)
+            (
+                deadline,
+                incident_id,
+                source,
+                fix_branch,
+                attempt_index,
+            ) = self._pending_verify.pop(detector_name)
             self.attempts.update(
                 incident_id,
                 source,
                 status="kept",
                 duration_seconds=self.cfg.healing.verify_window_seconds,
+            )
+            self._record_vault_attempt_resolution(
+                incident_id=incident_id,
+                attempt_index=attempt_index,
+                status="kept",
             )
             log().recovery(
                 f"fix for {detector_name!r} verified — no recurrence in "
@@ -752,13 +835,29 @@ class Monitor:
         """If a detection matches a pending verification, mark regressed."""
         if det.detector not in self._pending_verify:
             return
-        _, incident_id, source, fix_branch = self._pending_verify.pop(det.detector)
+        (
+            _,
+            incident_id,
+            source,
+            fix_branch,
+            attempt_index,
+        ) = self._pending_verify.pop(det.detector)
         action = self.cfg.healing.regression_action
         log().recovery(
             f"fix for {det.detector!r} REGRESSED (recurrence inside verify window) "
             f"— action={action}"
         )
         self.attempts.update(incident_id, source, status="regressed")
+        self._record_vault_attempt_resolution(
+            incident_id=incident_id,
+            attempt_index=attempt_index,
+            status="regressed",
+        )
+        self._record_vault_regression(
+            incident_id=incident_id,
+            detector=det.detector,
+            original_attempt=attempt_index,
+        )
         # Rules just failed for this detector. Default posture is to
         # bring in the agent on the next attempt rather than recycle
         # rules. Claude-sourced regressions stay on the agent path
@@ -834,6 +933,163 @@ class Monitor:
             apply_inbox_commands(self, self.inbox_path)
         except Exception as e:  # noqa: BLE001
             log().error(f"inbox consume failed: {e}")
+
+    # ----- vault helpers --------------------------------------------------
+
+    @staticmethod
+    def _vault_run_id_for(started_at: str) -> str:
+        """Stable id for the supervisor session, derived from its
+        start timestamp. Used as the vault note filename."""
+        # Replace colons + dots so the id is a clean filename slug.
+        return started_at.replace(":", "-").replace(".", "-")
+
+    def _current_child_run_id(self) -> str | None:
+        if self._vault_run_id is None or self._vault_child_index == 0:
+            return None
+        return f"{self._vault_run_id}-child-{self._vault_child_index}"
+
+    def _record_vault_child_restart(
+        self,
+        *,
+        pid: int | None,
+        started_at: str,
+        reason: str | None,
+    ) -> None:
+        """Bump the child-restart counter and write the child-run note.
+        Safe to call when ``self.vault`` is None."""
+        if self.vault is None or self._vault_run_id is None:
+            return
+        self._vault_child_index += 1
+        self.vault.record_child_restart(
+            run_id=self._vault_run_id,
+            child_index=self._vault_child_index,
+            pid=pid,
+            started_at=started_at,
+            reason=reason,
+        )
+
+    def _record_vault_incident(
+        self,
+        det: Detection,
+        incident_id: str,
+        folder: Path,
+        *,
+        fired_at: str,
+    ) -> None:
+        """Classify the incident against the pattern index, write the
+        incident summary note, update the detector aggregator, and
+        (if a pattern threshold was just crossed) refresh the pattern
+        note. All best-effort; failures log and the supervisor keeps
+        running."""
+        if self.vault is None or self.patterns is None:
+            return
+        try:
+            classification = self.patterns.classify(
+                incident_id=incident_id,
+                detector=det.detector,
+                message=det.message,
+                trace=det.trace or None,
+            )
+            incident_folder_rel = str(folder.relative_to(self.vault.root.parent.parent))
+        except Exception as e:  # noqa: BLE001
+            log().error(f"vault: classify failed for incident {incident_id}: {e}")
+            return
+
+        pattern_slug = classification.pattern.slug if classification.pattern is not None else None
+        self.vault.record_incident(
+            incident_id=incident_id,
+            run_id=self._vault_run_id or "unknown-run",
+            child_run_id=self._current_child_run_id(),
+            detector=det.detector,
+            kind=det.kind,
+            message=det.message,
+            fired_at=fired_at,
+            trace_hash=classification.trace_hash,
+            pattern_slug=pattern_slug,
+            incident_folder_rel=incident_folder_rel,
+        )
+        # Refresh pattern note whenever the index touched it — either a
+        # threshold-crossing promotion or an additional incident joining
+        # an existing pattern. Idempotent rewrite.
+        if classification.pattern is not None:
+            self.vault.record_pattern(
+                slug=classification.pattern.slug,
+                detector=classification.pattern.detector,
+                representative_message=classification.pattern.representative_message,
+                incident_ids=classification.pattern.incident_ids,
+                trace_hash=classification.pattern.trace_hash,
+            )
+
+    def _next_attempt_index(self, incident_id: str) -> int:
+        n = self._vault_attempt_counters.get(incident_id, 0) + 1
+        self._vault_attempt_counters[incident_id] = n
+        return n
+
+    def _record_vault_attempt_start(
+        self,
+        *,
+        incident_id: str,
+        attempt_index: int,
+        outcome: HealerOutcome,
+        fix_branch: FixBranch | None,
+    ) -> None:
+        if self.vault is None:
+            return
+        self.vault.record_attempt_start(
+            incident_id=incident_id,
+            attempt_index=attempt_index,
+            source=outcome.source,
+            rule_name=outcome.rule_name,
+            action_kind=outcome.action.kind if outcome.action else "(no-action)",
+            action_set=dict(outcome.action.set) if outcome.action else {},
+            started_at=now_iso(),
+            branch=fix_branch.name if fix_branch else None,
+        )
+
+    def _record_vault_attempt_resolution(
+        self,
+        *,
+        incident_id: str,
+        attempt_index: int,
+        status: str,
+        notes: str | None = None,
+    ) -> None:
+        if self.vault is None:
+            return
+        self.vault.record_attempt_resolution(
+            incident_id=incident_id,
+            attempt_index=attempt_index,
+            status=status,
+            ended_at=now_iso(),
+            notes=notes,
+        )
+
+    def _record_vault_regression(
+        self,
+        *,
+        incident_id: str,
+        detector: str,
+        original_attempt: int,
+    ) -> None:
+        if self.vault is None:
+            return
+        self.vault.record_regression(
+            incident_id=incident_id,
+            detector=detector,
+            original_attempt=original_attempt,
+            re_fire_at=now_iso(),
+        )
+
+    def _record_vault_exhaustion(self, *, detector: str | None) -> None:
+        if self.vault is None or self._vault_run_id is None:
+            return
+        self.vault.record_exhaustion(
+            run_id=self._vault_run_id,
+            final_restart_count=self.state.restarts,
+            max_restarts=self.state.max_restarts,
+            final_detector=detector,
+            ended_at=now_iso(),
+        )
 
     def _touch_session_dispatch_marker(self) -> None:
         """Signal the interactive Claude Code session that a new incident

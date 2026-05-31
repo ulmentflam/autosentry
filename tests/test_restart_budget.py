@@ -88,7 +88,7 @@ def test_tick_verifications_resets_restarts_on_kept(tmp_path: Path, monkeypatch)
     assert monitor.state.restarts_total == 2
 
     # Plant a pending verification whose deadline has already passed.
-    monitor._pending_verify["detX"] = (time.monotonic() - 1, "inc-1", "rule_a", None)
+    monitor._pending_verify["detX"] = (time.monotonic() - 1, "inc-1", "rule_a", None, 1)
     # Seed a matching ledger row so the update() call has something to find.
     from autosentry.ledger import Attempt
 
@@ -114,7 +114,7 @@ def test_tick_verifications_resets_restarts_on_kept(tmp_path: Path, monkeypatch)
 def test_tick_verifications_clears_escalation_flag(tmp_path: Path, monkeypatch):
     monitor = _make_monitor(tmp_path, monkeypatch)
     monitor._escalation_active = True
-    monitor._pending_verify["detX"] = (time.monotonic() - 1, "inc-1", "rule_a", None)
+    monitor._pending_verify["detX"] = (time.monotonic() - 1, "inc-1", "rule_a", None, 1)
     from autosentry.ledger import Attempt
 
     monitor.attempts.append(
@@ -295,6 +295,7 @@ def test_rule_regression_forces_claude_on_next_attempt(tmp_path: Path, monkeypat
         "inc-1",
         "rules",
         None,
+        1,
     )
 
     rule_called = False
@@ -339,6 +340,7 @@ def test_rule_regression_escalation_disabled_keeps_rules(tmp_path: Path, monkeyp
         "inc-1",
         "rules",
         None,
+        1,
     )
 
     rule_called = False

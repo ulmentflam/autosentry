@@ -6,6 +6,65 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-31
+
+### Added
+
+- **Obsidian-compatible markdown vault.** Inspired by claude-obsidian:
+  autosentry now writes human-readable, wikilinked markdown summaries
+  of significant supervisor events to `.autosentry/vault/`. Open the
+  directory in Obsidian for the graph view; everything is plain
+  markdown that needs no plugin to render.
+
+  File layout:
+
+  ```
+  .autosentry/vault/
+  ├── index.md
+  ├── runs/<run-id>.md
+  ├── runs/<run-id>/child-<n>.md          ← every supervised child restart
+  ├── incidents/<id>.md
+  ├── incidents/<id>/attempt-<n>.md       ← every healer attempt
+  ├── detectors/<name>.md                  ← per-detector aggregator
+  ├── patterns/<slug>.md                   ← recurring failure modes
+  ├── regressions/<incident-id>.md         ← fixes that didn't stick
+  └── exhaustions/<run-id>.md              ← runs that gave up
+  ```
+
+  Two sub-tree dimensions: **supervisor sessions branch into child
+  process restarts**, and **incidents branch into attempt chains**.
+  The graph view in Obsidian renders the full DAG out of the box.
+
+- **Significant-event detection.**
+  - **Patterns**: trace-hash matching (SHA-256 of a normalized trace —
+    strips line numbers, hex addresses, PIDs, timestamps, path prefixes)
+    plus message-similarity grouping (same detector + Levenshtein
+    distance within `vault.similarity_threshold * max(len(a), len(b))`).
+    Once `vault.pattern_threshold` (default 3) incidents match, autosentry
+    creates a `patterns/<slug>.md` aggregator note linking all of them.
+    Subsequent same-trace incidents join the existing pattern immediately.
+  - **Regressions**: when a fix re-fires inside the verify window,
+    `regressions/<incident-id>.md` documents the rollback.
+  - **Exhaustions**: when `max_restarts` is hit, `exhaustions/<run-id>.md`
+    summarizes why autosentry stopped trying.
+  - **Same-bug crashes**: trace-hash matching catches identical bugs
+    across different incidents even when messages differ slightly.
+
+- **Vault config.** New `vault: { enabled, path, pattern_threshold,
+  similarity_threshold }` block. Vault is enabled by default; set
+  `vault.enabled: false` to opt out entirely. All vault writes are
+  best-effort — a vault failure logs an error but never blocks the
+  monitor loop.
+
+### Notes
+
+- Templated narratives only in 0.11.0. LLM-generated narratives for
+  "first occurrence of a pattern / regression / exhaustion" are queued
+  for 0.11.1 (they reuse the LangGraph provider factory from 0.10.0;
+  free under `dispatch.mode: session`).
+- Web viewer (`autosentry web`) doesn't render the vault yet — that's
+  the 0.12.0 PR. For now, open the directory in Obsidian directly.
+
 ## [0.10.0] — 2026-05-31
 
 ### Added
