@@ -6,6 +6,62 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-05-31
+
+### Added
+
+- **`autosentry doctor --fix` auto-repair** plus 11 new diagnostic
+  checks covering layout & migration, corrupt state files, integration
+  health, and steering. Designed for old or partially-broken installs:
+
+  | check                       | what it catches                            | repair |
+  |-----------------------------|--------------------------------------------|--------|
+  | legacy config               | pre-0.8 root-level `autosentry.yaml`       | move to `.autosentry/` |
+  | `.autosentry` tree          | missing `incidents/` / `logs/` / `prompts/` | recreate dirs |
+  | vault dir                   | missing `.autosentry/vault/`               | rebuild from `incidents/index.jsonl` |
+  | `state.json`                | unparseable JSON                           | rotate aside as `.broken-<ts>` |
+  | `attempts.tsv`              | malformed rows                             | rotate aside |
+  | `incidents/index.jsonl`     | malformed JSONL lines                      | rotate aside |
+  | stop hook                   | `dispatch.mode: session` without hook      | install via `autosentry hooks install` |
+  | langgraph api keys          | provider key missing                       | (no auto-fix; surfaced loud) |
+  | recovery request            | orphaned `recovery_request.md` blocking runs | rotate to `.stale-<ts>` |
+  | `claude.mode` steering      | deprecated `subprocess` mode               | (no fix; explains alternatives) |
+
+  `--fix` is idempotent — running it twice is a no-op the second time.
+  Sensitive things (API keys, config edits) are never auto-changed.
+
+- **LLM-generated vault narratives** for first-occurrence significant
+  events. New `vault.narratives: {enabled, provider, model}` config
+  (off by default) reuses the LangGraph provider factory from 0.10.0.
+  When a pattern crosses its threshold for the first time, when an
+  incident first regresses, or when a run first exhausts its restart
+  budget, the narrator fires a single LLM call and replaces the
+  templated `## Narrative` section in the relevant note. Dedup state
+  lives in `.autosentry/vault/.narrated.json` — subsequent same-class
+  events use the templated narrative without additional LLM calls.
+  Best-effort: a failed narration logs and returns; the note keeps
+  its templated paragraph.
+
+- **Vault rendering in `autosentry web`** plus a Mermaid graph view.
+  New routes:
+  - `GET /vault` — categorized index of every vault note.
+  - `GET /vault/<subdir>/<file>` — renders the markdown note with
+    Obsidian `[[wikilinks]]` resolved to in-app URLs. Nested notes
+    (attempts, child runs) are addressed via the wikilink ID
+    convention (`<parent>-<child>`).
+  - `GET /vault/graph` — Mermaid `graph TD` of supervisor sessions →
+    child restarts on one axis, and incidents → attempts → outcomes
+    on the other, with pattern aggregator dotted edges. Click any
+    node to drill into its vault note.
+
+### Changed
+
+- `record_pattern` in `VaultStore` is now an incremental update for
+  existing pattern notes (appends new incidents, bumps the count)
+  rather than a full re-render. Preserves any LLM narrative the
+  narrator has injected — a full re-render was clobbering it back to
+  the templated prose.
+
 ## [0.11.0] — 2026-05-31
 
 ### Added

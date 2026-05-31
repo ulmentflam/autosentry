@@ -33,6 +33,7 @@ from autosentry.state import MonitorState, StateStore
 from autosentry.supervisors import supervisor_for
 from autosentry.supervisors.base import LogLine
 from autosentry.vault import VaultStore
+from autosentry.vault.narrator import Narrator
 from autosentry.vault.patterns import PatternIndex
 
 # Default paths for the dispatcher's coordination files. The monitor reads
@@ -64,6 +65,7 @@ class Monitor:
         # incidents/ + attempts.tsv on-disk state.
         self.vault: VaultStore | None = None
         self.patterns: PatternIndex | None = None
+        self.narrator: Narrator | None = None
         if cfg.vault.enabled:
             vault_root = cfg.resolve(cfg.vault.path)
             self.vault = VaultStore(vault_root)
@@ -72,6 +74,11 @@ class Monitor:
                 threshold=cfg.vault.pattern_threshold,
                 similarity=cfg.vault.similarity_threshold,
             )
+            # Narrator is constructed unconditionally but only fires
+            # when ``vault.narratives.enabled`` AND the provider key is
+            # set (see ``Narrator.enabled``). Constructing it cheap;
+            # it loads ``.narrated.json`` for dedup.
+            self.narrator = Narrator(cfg.vault.narratives, vault_root)
         # Per-run vault state: the run id + the attempt counter per
         # incident so attempt notes get stable sub-paths.
         self._vault_run_id: str | None = None
@@ -1019,6 +1026,11 @@ class Monitor:
                 incident_ids=classification.pattern.incident_ids,
                 trace_hash=classification.pattern.trace_hash,
             )
+            # First time this pattern crossed the threshold? Replace
+            # the templated narrative with LLM prose (if the narrator
+            # is enabled + the provider key is set). Best-effort.
+            if classification.is_new_pattern and self.narrator is not None:
+                self._maybe_narrate_pattern(classification.pattern)
 
     def _next_attempt_index(self, incident_id: str) -> int:
         n = self._vault_attempt_counters.get(incident_id, 0) + 1
@@ -1073,23 +1085,100 @@ class Monitor:
     ) -> None:
         if self.vault is None:
             return
-        self.vault.record_regression(
+        ref = self.vault.record_regression(
             incident_id=incident_id,
             detector=detector,
             original_attempt=original_attempt,
             re_fire_at=now_iso(),
         )
+        # First regression for this incident gets an LLM narrative.
+        if ref is not None and self.narrator is not None:
+            self._maybe_narrate_regression(
+                note_path=ref.path,
+                incident_id=incident_id,
+                detector=detector,
+                original_attempt=original_attempt,
+            )
 
     def _record_vault_exhaustion(self, *, detector: str | None) -> None:
         if self.vault is None or self._vault_run_id is None:
             return
-        self.vault.record_exhaustion(
+        ref = self.vault.record_exhaustion(
             run_id=self._vault_run_id,
             final_restart_count=self.state.restarts,
             max_restarts=self.state.max_restarts,
             final_detector=detector,
             ended_at=now_iso(),
         )
+        if ref is not None and self.narrator is not None:
+            self._maybe_narrate_exhaustion(
+                note_path=ref.path,
+                run_id=self._vault_run_id,
+                final_restart_count=self.state.restarts,
+                max_restarts=self.state.max_restarts,
+                final_detector=detector,
+            )
+
+    # ----- narrator integration -------------------------------------------
+
+    def _maybe_narrate_pattern(self, pattern) -> None:  # noqa: ANN001
+        """First-occurrence narrator for a new pattern. Returns
+        silently if the narrator is disabled or the LLM call fails;
+        replaces the templated narrative on success."""
+        if self.narrator is None or self.vault is None:
+            return
+        narrative = self.narrator.narrate_pattern(
+            slug=pattern.slug,
+            detector=pattern.detector,
+            representative_message=pattern.representative_message,
+            incident_count=len(pattern.incident_ids),
+        )
+        if narrative is None:
+            return
+        self.vault.replace_narrative(
+            self.vault.root / "patterns" / f"pattern-{pattern.slug}.md",
+            narrative,
+        )
+
+    def _maybe_narrate_regression(
+        self,
+        *,
+        note_path: Path,
+        incident_id: str,
+        detector: str,
+        original_attempt: int,
+    ) -> None:
+        if self.narrator is None or self.vault is None:
+            return
+        narrative = self.narrator.narrate_regression(
+            incident_id=incident_id,
+            detector=detector,
+            original_attempt=original_attempt,
+        )
+        if narrative is None:
+            return
+        self.vault.replace_narrative(note_path, narrative)
+
+    def _maybe_narrate_exhaustion(
+        self,
+        *,
+        note_path: Path,
+        run_id: str,
+        final_restart_count: int,
+        max_restarts: int,
+        final_detector: str | None,
+    ) -> None:
+        if self.narrator is None or self.vault is None:
+            return
+        narrative = self.narrator.narrate_exhaustion(
+            run_id=run_id,
+            final_restart_count=final_restart_count,
+            max_restarts=max_restarts,
+            final_detector=final_detector,
+        )
+        if narrative is None:
+            return
+        self.vault.replace_narrative(note_path, narrative)
 
     def _touch_session_dispatch_marker(self) -> None:
         """Signal the interactive Claude Code session that a new incident

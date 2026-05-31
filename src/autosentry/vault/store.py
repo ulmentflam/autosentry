@@ -297,6 +297,33 @@ class VaultStore:
                 f"vault: failed to update attempt resolution {incident_id}/{attempt_index}: {e}"
             )
 
+    def replace_narrative(self, note_path: Path, narrative: str) -> None:
+        """Swap the templated ``## Narrative`` section's body for the
+        given LLM-generated prose. Used by :mod:`autosentry.vault.narrator`
+        on first-occurrence events.
+
+        Best-effort: a malformed note (no ``## Narrative`` heading)
+        is left unchanged. Idempotent — calling twice with the same
+        narrative produces the same file.
+        """
+        if not note_path.exists():
+            return
+        try:
+            with self._lock:
+                text = note_path.read_text(encoding="utf-8")
+                # Wrap the narrative paragraph in a single trailing
+                # newline so subsequent sections stay separated.
+                new_text = _replace_section(
+                    text,
+                    section="## Narrative",
+                    body=narrative.strip() + "\n",
+                )
+                if new_text != text:
+                    new_text = _replace_frontmatter_value(new_text, "updated", _now_iso())
+                    self._write_atomic(note_path, new_text)
+        except OSError as e:
+            log().error(f"vault: failed to replace narrative in {note_path.name}: {e}")
+
     # ----- significant-event notes -----------------------------------------
 
     def record_pattern(
@@ -308,22 +335,45 @@ class VaultStore:
         incident_ids: list[str],
         trace_hash: str | None,
     ) -> NoteRef | None:
-        """Create or refresh the pattern aggregator note. Caller owns
-        the dedup decision (don't call this for every fire; only when
-        the pattern threshold is met or a new incident joins it)."""
+        """Create the pattern aggregator note on first sighting; on
+        subsequent calls only update the linked-incidents list (and
+        the incident_count in frontmatter).
+
+        This preserves any LLM narrative the narrator has injected —
+        a full re-render would clobber it back to the templated prose.
+        """
         try:
             path = self.root / "patterns" / f"pattern-{slug}.md"
             existed = path.exists()
-            self._write_atomic(
-                path,
-                tpl.render_pattern(
-                    slug=slug,
-                    detector=detector,
-                    representative_message=representative_message,
-                    incident_ids=incident_ids,
-                    trace_hash=trace_hash,
-                ),
-            )
+            if not existed:
+                self._write_atomic(
+                    path,
+                    tpl.render_pattern(
+                        slug=slug,
+                        detector=detector,
+                        representative_message=representative_message,
+                        incident_ids=incident_ids,
+                        trace_hash=trace_hash,
+                    ),
+                )
+            else:
+                # Incremental: append any newly-linked incidents to the
+                # ``## Linked incidents`` section + bump the count in
+                # frontmatter. Leaves Narrative + other sections alone.
+                with self._lock:
+                    text = path.read_text(encoding="utf-8")
+                    for inc_id in incident_ids:
+                        text = _append_under_section(
+                            text,
+                            "## Linked incidents",
+                            f"- [[{inc_id}]]",
+                            dedupe=True,
+                        )
+                    text = _replace_frontmatter_value(
+                        text, "incident_count", str(len(incident_ids))
+                    )
+                    text = _replace_frontmatter_value(text, "updated", _now_iso())
+                    self._write_atomic(path, text)
             # Backlink the pattern from the detector aggregator's
             # Patterns section (idempotent).
             self._append_list_item(

@@ -363,6 +363,32 @@ class NotifierSpec(BaseModel):
     url: str | None = None
 
 
+class VaultNarrativeConfig(BaseModel):
+    """LLM-generated prose narratives for first-occurrence vault events.
+
+    When enabled, autosentry fires a single LLM call per "first
+    occurrence" of a significant event (first pattern threshold cross,
+    first regression for an incident, first exhaustion of a run) and
+    drops the resulting paragraph into the relevant note's
+    ``## Narrative`` section. Dedup is on by default — re-firing
+    events use the templated narrative without an additional LLM call.
+
+    Reuses :mod:`autosentry.healers.langgraph_providers` for provider
+    wiring (Anthropic / OpenAI / Google with BYO API key).
+
+    Off by default to avoid surprise billing. Use ``dispatch.mode:
+    session`` for the free Claude-Code-subscription path; this
+    config is for headless runs that want richer vault notes.
+    """
+
+    enabled: bool = False
+    provider: Literal["anthropic", "openai", "google"] = "anthropic"
+    model: str = "claude-haiku-4-5"
+    # Per-LLM-call timeout for the narrator. Short — narratives are
+    # decorative; they shouldn't block the monitor.
+    request_timeout_seconds: int = 30
+
+
 class VaultConfig(BaseModel):
     """Obsidian-compatible markdown vault of significant supervisor events.
 
@@ -375,8 +401,8 @@ class VaultConfig(BaseModel):
 
     The vault is *derived* from incidents + the attempts ledger — it
     doesn't store anything that isn't already on disk somewhere. Open
-    ``.autosentry/vault/`` in Obsidian directly; v0.12.0 will also
-    render it under ``autosentry web``.
+    ``.autosentry/vault/`` in Obsidian directly; v0.12.0 also renders
+    it under ``autosentry web``.
     """
 
     enabled: bool = True
@@ -390,6 +416,8 @@ class VaultConfig(BaseModel):
     # message length) for two messages to count as "similar". 0.3
     # tolerates timestamps and small numeric drift; 0.1 is strict.
     similarity_threshold: float = 0.3
+    # LLM narratives for first-occurrence events. Off by default.
+    narratives: VaultNarrativeConfig = Field(default_factory=VaultNarrativeConfig)
 
 
 class AutoSentryConfig(BaseModel):
