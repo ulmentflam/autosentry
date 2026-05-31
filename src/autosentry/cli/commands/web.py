@@ -28,12 +28,35 @@ def web(
 ) -> None:
     """Serve the incident folders + vault over a small read-only HTTP UI.
 
-    Routes: an index of incidents from `index.jsonl` with a client-side
-    filter, a detail page that renders each `report.md` as HTML,
-    per-artifact endpoints (`trace.txt`, frame files, config snapshots,
-    fix diff), and (0.12.0) a vault browser at ``/vault`` + a Mermaid
-    graph view at ``/vault/graph``. Stdlib `http.server` only — no
-    Flask/FastAPI.
+    Routes:
+
+    ``GET /``
+        Redirects to ``/incidents``.
+    ``GET /incidents``
+        Index of all incidents (newest first) with a client-side filter.
+        Sourced from ``incidents/index.jsonl``.
+    ``GET /incidents/<id>``
+        Full incident report (``report.md`` rendered as HTML), exploded
+        source frames, snapshotted configs, and the fix diff.
+    ``GET /incidents/<id>/raw/<file>``
+        Raw artifact within the incident folder — ``trace.txt``,
+        frame files (``frames/``), config snapshots (``configs/``),
+        ``state.json``, ``rule_match.json``, fix files (``fix/``).
+    ``GET /vault``
+        Categorized index of vault notes: runs, incidents, detectors,
+        patterns, regressions, exhaustions. Only available when
+        ``vault.enabled: true`` (the default).
+    ``GET /vault/<subdir>/<file>``
+        Render a vault note. Obsidian ``[[wikilinks]]`` are resolved to
+        in-app URLs. Nested notes (e.g. attempt notes under an incident)
+        are addressed via the wikilink-id convention
+        ``<parent>-<child>`` mapping to ``<subdir>/<parent>/<child>.md``.
+    ``GET /vault/graph``
+        Mermaid ``graph TD`` of run → child-restart → incident →
+        attempt → outcome chains; pattern aggregators shown as dotted
+        edges. Click any node to drill into its vault note.
+    ``GET /healthz``
+        Liveness probe; returns ``200 ok``.
 
     Path-traversal defended. Binds localhost by default; print a
     warning when you flip --host to 0.0.0.0 since incident contents

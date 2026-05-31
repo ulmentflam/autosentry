@@ -258,6 +258,58 @@ Bidirectional Slack (separate shell — the monitor stays offline-safe):
 SLACK_BOT_TOKEN=xoxb-… autosentry dispatcher run --channel C0A4UK987ND
 ```
 
+### The vault
+
+Every time autosentry handles a significant event — an incident, a fix
+attempt, a recurring failure pattern, a regression, a run that exhausted
+its restart budget — it writes a wikilinked markdown note into
+`.autosentry/vault/`. The vault is plain markdown; no tool is required
+to read it.
+
+```
+.autosentry/vault/
+├── index.md
+├── runs/<run-id>.md
+├── runs/<run-id>/child-<n>.md        ← supervised child restarts
+├── incidents/<id>.md
+├── incidents/<id>/attempt-<n>.md     ← healer attempts
+├── detectors/<name>.md               ← per-detector aggregators
+├── patterns/<slug>.md                ← recurring failure modes
+├── regressions/<incident-id>.md      ← fixes that didn't stick
+└── exhaustions/<run-id>.md           ← runs that gave up
+```
+
+`autosentry web` exposes the vault at `/vault` (categorized note index),
+`/vault/<subdir>/<file>` (individual notes with wikilinks resolved to
+in-app URLs), and `/vault/graph` (a Mermaid `graph TD` of run → child →
+incident → attempt → outcome chains — click any node to drill in).
+
+#### Open the vault in Obsidian
+
+Open `.autosentry/vault/` as an Obsidian vault: **File → Open folder as
+vault** and select the directory. All frontmatter, `[[wikilinks]]`, and
+`#tags` work natively — no community plugins required.
+
+A few things worth knowing once it's open:
+
+- **Graph view** (Cmd-G / Ctrl-G) shows the same DAG that
+  `autosentry web` renders at `/vault/graph`. Obsidian's graph is live
+  and interactive; the web one is a static Mermaid snapshot.
+- **Obsidian search** understands frontmatter tags directly:
+  `tag:#detector/oom`, `tag:#pattern`, `tag:#outcome/regressed`, and so
+  on. Every note autosentry writes has tags set — searching by tag is
+  usually faster than full-text.
+- **The vault is derived data.** `.autosentry/incidents/index.jsonl` is
+  the source of truth. If the vault directory is deleted or corrupted,
+  run `autosentry doctor --fix` and it will be rebuilt from the index.
+- **LLM narratives** are off by default. Set
+  `vault.narratives.enabled: true` in `.autosentry/autosentry.yaml` to
+  turn them on. When enabled, the first occurrence of a pattern,
+  regression, or exhaustion triggers a single LLM call that replaces the
+  templated `## Narrative` section in the relevant note with a
+  context-aware paragraph. Subsequent same-class events reuse the
+  template — only the first occurrence is narrated.
+
 ---
 
 ## How it works
