@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autosentry"
-version = "0.9.0"
+version = "0.10.0"
 description = "Self-healing supervisor for long-running processes — watch a command, catch the failure, fix it, leave a paper trail."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,6 +31,18 @@ dependencies = [
     "tree-sitter>=0.23",
     "tree-sitter-language-pack>=0.4",
     "markdown-it-py>=3.0",
+    # LangGraph-powered headless healer (0.10.0+). Hard dep so that
+    # ``healing.claude.mode: langgraph`` works out of the box; the
+    # provider-specific clients below are also hard deps so we don't
+    # have to ship per-provider extras. Install-size impact: ~50 MB
+    # added (mostly google-api-core + grpcio transitives). If this
+    # becomes a problem we can move to ``autosentry[langgraph]``
+    # extras later — non-breaking change.
+    "langgraph>=1.0,<2.0",
+    "langchain-core>=1.0,<2.0",
+    "langchain-anthropic>=1.0,<2.0",
+    "langchain-openai>=1.0,<2.0",
+    "langchain-google-genai>=4.0,<5.0",
 ]
 
 [project.optional-dependencies]

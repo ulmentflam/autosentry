@@ -6,6 +6,55 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-31
+
+### Added
+
+- **LangGraph-powered headless healer.** New `healing.claude.mode:
+  langgraph` value (with a sibling `healing.langgraph` config block)
+  replaces the single-shot `claude --print` subprocess healer with a
+  real multi-step diagnosis graph. The graph: `prepare_context →
+  diagnose (LLM + tools: read_file / grep_repo / view_log_excerpt) →
+  [optional cross_check (second LLM) → REJECT loops back] → finalize`,
+  bounded by `max_steps`. Supports three providers via BYO API key:
+  - `anthropic` (`ANTHROPIC_API_KEY`)
+  - `openai` (`OPENAI_API_KEY`)
+  - `google` (`GOOGLE_API_KEY`)
+
+  Cross-check can mix providers (e.g. Claude diagnoses, GPT validates,
+  Gemini cross-checks). Missing API keys surface a clean error and
+  fall back to the restart_policy safety net — no stack traces.
+
+- **Healer-runtime billing matters.** Three runtimes now exist with
+  three billing models, and 0.10.0 makes the choice explicit:
+  - `dispatch.mode: session` — **free** under the user's Claude Code
+    subscription. Preferred for Claude Code users.
+  - `healing.claude.mode: interactive` — **free** (same session). Legacy.
+  - `healing.claude.mode: subprocess` — **per-call** against the
+    Anthropic API. Now soft-deprecated (see Notes).
+  - `healing.claude.mode: langgraph` — **per-call** against your
+    chosen provider. New in 0.10.0; the headless path of choice.
+
+  The `/autosentry` skill body now documents this matrix and steers
+  Claude Code users to `dispatch.mode: session` explicitly.
+
+### Changed
+
+- **Install size grew.** 0.10.0 adds `langgraph`, `langchain-core`,
+  `langchain-anthropic`, `langchain-openai`, and
+  `langchain-google-genai` as hard deps (~50 MB installed, mostly from
+  google's gRPC transitives). If this hurts you, file an issue —
+  moving the LangGraph stack to an `autosentry[langgraph]` extras_require
+  is a non-breaking change we'll do in 0.11.0 if there's demand.
+
+### Deprecated
+
+- **`healing.claude.mode: subprocess`.** Logs a one-line nudge at
+  config-load directing users to `dispatch.mode: session` (free) or
+  `healing.claude.mode: langgraph` (multi-step + provider choice).
+  The legacy path stays functional in 0.10.x — no migration required
+  today. Removal is not currently planned but may happen in 1.0.
+
 ## [0.9.0] — 2026-05-31
 
 ### Added

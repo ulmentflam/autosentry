@@ -186,6 +186,21 @@ Walk the user through the config:
 - `healing.claude.subagents` — per-detector subagent routing for both
   the Phase 0 and Phase 5 paths.
 
+### Healer runtimes (which costs money?)
+
+| runtime                              | billing                                   | when to use                                  |
+|--------------------------------------|-------------------------------------------|----------------------------------------------|
+| `dispatch.mode: session`             | **Free** — runs under Claude Code sub.    | **Preferred** for Claude Code users.         |
+| `healing.claude.mode: interactive`   | **Free** — same Claude Code session.      | Legacy handshake; superseded by `session`.   |
+| `healing.claude.mode: subprocess`    | **Per-call** — `claude --print` to API.   | Superseded; soft-deprecated in 0.10.0.       |
+| `healing.claude.mode: langgraph`     | **Per-call** — your provider key.         | Headless deployments (no Claude Code).       |
+
+If a Claude Code user is reading this, **steer them to `dispatch.mode:
+session`** — they're paying a Claude Code subscription, the healer is
+free in that flow, and the multi-step diagnosis is just as good (you
+spawn Task subagents). Save the LangGraph path for CI / k8s / server
+boxes where there's no interactive session.
+
 ## Phase 3 — launch
 
 ```bash

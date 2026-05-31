@@ -79,6 +79,19 @@ class ClaudeHealer:
             log().info("Claude healer skipped — no usable mode (no skill installed, no CLI)")
             return None
 
+        # LangGraph mode delegates to a separate healer class — different
+        # provider matrix (Anthropic / OpenAI / Google), different graph
+        # shape, different config block. Routed through ClaudeHealer so
+        # the Monitor's dispatch site stays one-call.
+        if mode == "langgraph":
+            from autosentry.healers.langgraph_healer import LangGraphHealer
+
+            return LangGraphHealer(self.cfg).attempt(
+                det,
+                state_dict=state_dict,
+                last_incident_dir=last_incident_dir,
+            )
+
         prompt = self._build_prompt(det, state_dict, last_incident_dir)
         repo_root = self.cfg.resolve(".")
         diff_before = _git_diff_or_empty(repo_root)
@@ -107,6 +120,13 @@ class ClaudeHealer:
     # ----- mode resolution --------------------------------------------------
 
     def _is_enabled(self) -> bool:
+        # LangGraph is an independent runtime — if the operator has
+        # turned it on, the healer is "enabled" regardless of the
+        # legacy ``claude.enabled`` flag. Lets users disable the
+        # ``claude --print`` path and use LangGraph exclusively without
+        # also having to set ``claude.enabled: true``.
+        if self.cfg.healing.langgraph.enabled:
+            return True
         enabled = self.claude_cfg.enabled
         if enabled is False:
             return False
@@ -117,8 +137,20 @@ class ClaudeHealer:
         return True
 
     def _resolve_mode(self) -> str:
-        """Returns one of: ``subprocess``, ``interactive``, ``disabled``."""
+        """Returns one of: ``subprocess``, ``interactive``, ``langgraph``,
+        ``disabled``.
+
+        Resolution priority for ``auto``: interactive (free under
+        Claude Code subscription) > langgraph (when ``healing.langgraph
+        .enabled`` and a provider key is set) > subprocess (legacy,
+        billed) > disabled. The session-dispatch path
+        (``dispatch.mode: session``) is preferred over any of these
+        for Claude Code users — when it's active, the in-process
+        healer doesn't fire at all.
+        """
         configured = self.claude_cfg.mode
+        if configured == "langgraph":
+            return "langgraph" if self.cfg.healing.langgraph.enabled else "disabled"
         if configured == "subprocess":
             return "subprocess" if self._claude_cli_present() else "disabled"
         if configured == "interactive":
@@ -126,6 +158,8 @@ class ClaudeHealer:
         # auto
         if self._skill_installed():
             return "interactive"
+        if self.cfg.healing.langgraph.enabled:
+            return "langgraph"
         if self._claude_cli_present():
             return "subprocess"
         return "disabled"

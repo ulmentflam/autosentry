@@ -163,10 +163,23 @@ class ClaudeConfig(BaseModel):
     # ``/autosentry`` skill is installed AND/OR ``claude`` is on PATH —
     # see ``ClaudeHealer._resolve_mode``.
     enabled: bool | Literal["auto"] = "auto"
-    # ``auto | subprocess | interactive``. ``auto`` picks ``interactive`` when
-    # the skill is installed in the repo, ``subprocess`` when only ``claude``
-    # is on PATH, and ``disabled`` (no-op) when neither is available.
-    mode: Literal["auto", "subprocess", "interactive"] = "auto"
+    # ``auto | subprocess | interactive | langgraph``.
+    #
+    # - ``auto``: picks ``interactive`` when the ``/autosentry`` skill
+    #   is installed (FREE under the user's Claude Code subscription;
+    #   the preferred path), ``subprocess`` when only ``claude`` is on
+    #   PATH, and ``disabled`` (no-op) when neither is available.
+    # - ``subprocess``: spawn ``claude --print``. **Billed per call**
+    #   against the user's Anthropic API account. Superseded by
+    #   ``dispatch.mode: session`` for Claude Code users and by
+    #   ``langgraph`` for headless deployments — kept for backwards
+    #   compat with a soft deprecation warning at config-load.
+    # - ``interactive``: file-handshake with an open ``/autosentry``
+    #   session. Free under Claude Code subscription.
+    # - ``langgraph``: route to the LangGraph diagnosis graph
+    #   (Anthropic / OpenAI / Google providers, BYO API key). See
+    #   :class:`LangGraphConfig`. Multi-step with optional cross-check.
+    mode: Literal["auto", "subprocess", "interactive", "langgraph"] = "auto"
     command: list[str] = Field(default_factory=lambda: ["claude", "--print"])
     timeout_seconds: int = 600
     prompt_template: str = ".autosentry/prompts/recovery.md"
@@ -259,8 +272,66 @@ class DispatchConfig(BaseModel):
     action_cursor_path: str = ".autosentry/session_action_cursor"
 
 
+#: Provider identifier the LangGraph healer accepts. Resolved to a
+#: concrete LangChain chat model class by the provider factory.
+LangGraphProvider = Literal["anthropic", "openai", "google"]
+
+
+class LangGraphCrossCheck(BaseModel):
+    """Second-LLM validation pass before the proposed action is applied.
+
+    A second model reviews the primary's proposal and replies
+    APPROVE / REJECT / MODIFY. REJECT loops back to ``diagnose`` once
+    with the cross-checker's feedback (bounded by
+    :attr:`LangGraphConfig.max_steps`); MODIFY adopts the modified
+    proposal; APPROVE finalizes.
+    """
+
+    enabled: bool = False
+    provider: LangGraphProvider = "openai"
+    model: str = "gpt-4o-mini"
+
+
+class LangGraphConfig(BaseModel):
+    """Headless LLM healer powered by LangGraph.
+
+    Used when ``healing.claude.mode: langgraph`` (or when ``auto``
+    resolves to it). This is the **per-call-billed** path for
+    deployments without an interactive Claude Code session; the session
+    path (``dispatch.mode: session``) is preferred when available
+    because it runs free under the user's Claude Code subscription.
+
+    The graph is intentionally small: ``prepare_context → diagnose →
+    [cross_check?] → finalize``. ``diagnose`` and ``cross_check`` are
+    full LLM calls with bounded tool access (read_file, grep_repo,
+    view_log_excerpt); ``finalize`` builds the :class:`HealerOutcome`.
+    """
+
+    # Disabled by default — opt-in to avoid surprise billing. The mode
+    # selector (``claude.mode: langgraph``) is the other half of the
+    # opt-in; both must agree for the healer to fire.
+    enabled: bool = False
+    provider: LangGraphProvider = "anthropic"
+    # Concrete model name; provider-specific. Defaults pick a fast,
+    # cheap model suitable for the diagnosis loop — operators tuning
+    # for higher-stakes deployments should bump to opus / gpt-5 / etc.
+    model: str = "claude-haiku-4-5"
+    # Sampling temperature for the diagnosis node. 0 is recommended
+    # for deterministic action selection.
+    temperature: float = 0.0
+    # Maximum diagnose→cross_check→diagnose loops before giving up
+    # and returning ``None`` (no action proposed). Each loop is a
+    # full LLM round-trip, so this directly bounds cost per incident.
+    max_steps: int = 3
+    # Per-LLM-call timeout in seconds. Distinct from
+    # ``ClaudeConfig.timeout_seconds`` which bounds the whole healer.
+    request_timeout_seconds: int = 120
+    cross_check: LangGraphCrossCheck = Field(default_factory=LangGraphCrossCheck)
+
+
 class HealingConfig(BaseModel):
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    langgraph: LangGraphConfig = Field(default_factory=LangGraphConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     budget: HealerBudget = Field(default_factory=HealerBudget)
     # After applying a fix, watch for ``verify_window_seconds`` for the
@@ -401,4 +472,30 @@ def load_config(path: str | Path) -> AutoSentryConfig:
     data = _interpolate_env(data)
     cfg = AutoSentryConfig.model_validate(data)
     cfg.config_path = path
+    _warn_on_deprecated_modes(cfg)
     return cfg
+
+
+def _warn_on_deprecated_modes(cfg: AutoSentryConfig) -> None:
+    """Print a one-line steering nudge for healer runtimes that have a
+    better alternative in 0.10.0+.
+
+    Currently fires only for ``healing.claude.mode: subprocess`` —
+    ``claude --print`` is programmatically billed against the user's
+    Anthropic account, but Claude Code users get the same diagnosis
+    free via the session-dispatch path, and headless users get a
+    multi-step diagnosis (and provider choice) via LangGraph. The
+    legacy path stays functional; this is just a nudge.
+    """
+    if cfg.healing.claude.mode == "subprocess":
+        # Lazy import to avoid pulling logger setup into config-load
+        # for processes that don't run the monitor (CLI helpers).
+        from autosentry.logger import log
+
+        log().info(
+            "healing.claude.mode: subprocess is superseded — "
+            "Claude Code users should use dispatch.mode: session "
+            "(free under Claude Code subscription); headless users should use "
+            "healing.claude.mode: langgraph (multi-step diagnosis, BYO provider key). "
+            "Subprocess mode still works."
+        )
