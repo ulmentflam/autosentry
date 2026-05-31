@@ -545,3 +545,30 @@ def _run_skills_install(target: Path, *, scope: str) -> None:
         f"  [{OK}]✓[/{OK}] /autosentry skill installed at scope={scope} → {where} "
         f"[{DIM}](created {created}, skipped {skipped}, no-global {no_global})[/{DIM}]"
     )
+
+    # Wire the session-dispatch Stop hook into .claude/settings.local.json.
+    # Local scope only — global ``~/.claude/`` is per-user and shouldn't be
+    # touched by an init in a single repo. Idempotent; safe to re-run.
+    if scope == "local":
+        _install_session_stop_hook(target)
+
+
+def _install_session_stop_hook(target: Path) -> None:
+    from autosentry.hooks import install_claude_stop_hook
+
+    try:
+        result = install_claude_stop_hook(target)
+    except OSError as e:
+        console.print(f"[{WARN}]Stop-hook install failed:[/{WARN}] {e}")
+        return
+    status_msg = {
+        "created": "Claude Code Stop hook wired (settings.local.json created)",
+        "added": "Claude Code Stop hook added to existing settings.local.json",
+        "already_present": "Claude Code Stop hook already present",
+        "skipped": "Claude Code settings.local.json unreadable — Stop hook NOT installed",
+    }[result.status]
+    style = WARN if result.status == "skipped" else OK
+    marker = "✓" if result.status != "skipped" else "!"
+    console.print(
+        f"  [{style}]{marker}[/{style}] {status_msg} [{DIM}]({result.settings_path})[/{DIM}]"
+    )

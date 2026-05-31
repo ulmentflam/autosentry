@@ -6,6 +6,74 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-31
+
+### Added
+
+- **Session-dispatch mode** — the interactive Claude Code session can
+  now be the watcher AND the dispatcher for autosentry, not just a
+  downstream healer. Originally the monitor was the master loop and the
+  session reacted to `recovery_request.md`; now you can flip the roles
+  so the session keeps a backstop monitor on autosentry itself and runs
+  the heal logic via the Task tool. Opt in with:
+
+  ```yaml
+  dispatch:
+    mode: session   # default: builtin (unchanged)
+  ```
+
+  Four moving parts ship together:
+
+  1. **Detector-only monitor.** Under `dispatch.mode: session` the
+     monitor still detects, writes incident folders, and updates the
+     heartbeat — but it no longer invokes the rule healer or Claude
+     healer, and no longer applies actions itself. The `restart_policy`
+     safety net (auto-restart a dead child) still runs so the supervised
+     process stays alive when no session is around to react. Every new
+     incident touches `.autosentry/session_dispatch_request` so the
+     session knows to wake up.
+
+  2. **New `autosentry probe` CLI.** One-shot liveness + pending-work
+     check. Stdout is structured JSON (`monitor.pid_alive`,
+     `monitor.stale`, `pending_incidents[]` with each entry's
+     `rule_match` and `suggested_action`). `--inject-prompt` emits a
+     Claude Code Stop-hook `decision: block` payload that re-engages the
+     session when there's work. `--advance-cursor <id>` advances the
+     pending-incidents cursor.
+
+  3. **`autosentry init` wires the Stop hook.** Init now writes a Stop
+     hook into `.claude/settings.local.json` (`autosentry probe
+     --inject-prompt --quiet`). Idempotent — re-running init won't
+     duplicate it; pre-existing hooks are preserved. New `autosentry
+     hooks install` / `autosentry hooks remove` commands manage the
+     hook outside of init.
+
+  4. **`autosentry session apply` + monitor action queue.** The session
+     enqueues actions via `autosentry session apply --incident <id>
+     --action <kind> [--set K=V] [--rule <name>]`; the monitor drains
+     the queue (`.autosentry/session_actions.jsonl`) on each tick and
+     calls `supervisor.apply_action` for each new entry, advancing
+     `.autosentry/session_action_cursor`. Keeps process-management
+     invariants inside the monitor where they belong.
+
+- **`/autosentry` skill extended** with a Phase 0 (session-watch fired)
+  block. The skill knows how to: probe autosentry, restart the monitor
+  if it's down, walk each pending incident, dispatch via either rule
+  match or Task subagent, and advance the cursor. The auto-healing
+  decision matrix is documented inline.
+
+### Notes
+
+- The legacy `claude.mode: interactive` request/response file dance
+  (`recovery_request.md` ↔ `recovery_response.md`) still works under
+  the default `dispatch.mode: builtin`. It is **superseded** by session
+  dispatch for new setups and will be removed in a future release. No
+  action required for existing users.
+
+- The Stop hook is Claude Code only for now. Codex, Gemini, Cursor, and
+  Aider users keep the Phase 5 handshake unchanged; hook variants for
+  other tools are tracked as a follow-up.
+
 ## [0.8.5] — 2026-05-30
 
 ### Fixed

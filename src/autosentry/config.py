@@ -220,6 +220,45 @@ class HealerBudget(BaseModel):
     max_wall_seconds_per_incident: int = 600
 
 
+class DispatchConfig(BaseModel):
+    """Who decides which healer to run for each detection.
+
+    - ``builtin`` (default): the in-process monitor matches rules,
+      invokes the Claude healer when no rule applies, and applies
+      actions itself. This is the original behavior.
+    - ``session``: the monitor stops at incident write — it detects,
+      writes the incident folder, updates state, but does not run
+      the rule or Claude healer and does not apply any action. An
+      interactive Claude Code session (via the ``/autosentry`` skill +
+      a ``Stop`` hook running ``autosentry watch --once``) reads the
+      pending incidents and dispatches healers via the Task tool.
+
+      The restart_policy safety-net (the fallback that restarts a dead
+      child up to ``max_restarts`` times) still runs in session mode —
+      we don't want the supervised process staying dead if no session
+      is around to react. Session mode disables the *smart* fix path
+      (rules + Claude), not the dumb-but-reliable safety net.
+    """
+
+    mode: Literal["builtin", "session"] = "builtin"
+    # File the monitor touches every time a detection writes an
+    # incident under ``mode=session``. The session's Stop hook /
+    # ``watch --once`` reads its mtime to know when there's new work.
+    request_marker: str = ".autosentry/session_dispatch_request"
+    # Where the session writes the last-handled incident id so the
+    # next ``watch --once`` only returns truly new work.
+    cursor_path: str = ".autosentry/session_dispatch_cursor"
+    # Append-only queue the session writes to (via ``autosentry session
+    # apply``) to ask the monitor to apply a RuleAction (restart,
+    # restart_with_env, …). The monitor drains this on each tick in
+    # session mode. Cousin of the recovery_request file dance, but
+    # one-directional and per-action instead of one-at-a-time.
+    action_queue_path: str = ".autosentry/session_actions.jsonl"
+    # Where the monitor records the last-applied action id so it doesn't
+    # re-apply on restart.
+    action_cursor_path: str = ".autosentry/session_action_cursor"
+
+
 class HealingConfig(BaseModel):
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     git: GitConfig = Field(default_factory=GitConfig)
@@ -261,6 +300,7 @@ class AutoSentryConfig(BaseModel):
     detectors: list[DetectorSpec] = Field(default_factory=list)
     rules: list[Rule] = Field(default_factory=list)
     healing: HealingConfig = Field(default_factory=HealingConfig)
+    dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     notifiers: list[NotifierSpec] = Field(default_factory=lambda: [NotifierSpec(kind="log")])
     state_path: str = ".autosentry/state.json"
     incidents_dir: str = ".autosentry/incidents"

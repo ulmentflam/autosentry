@@ -10,6 +10,7 @@ event becomes an incident folder + a notification.
 
 from __future__ import annotations
 
+import json
 import signal
 import threading
 import time
@@ -206,6 +207,91 @@ class Monitor:
             d = det.observe_tick()
             if d is not None:
                 self._fire_detection(d)
+        # In session-dispatch mode the interactive session decides
+        # which action to apply for each incident and asks the monitor
+        # to actually run it via the action queue. Cheap file read;
+        # only ticks in this mode.
+        if self.cfg.dispatch.mode == "session":
+            self._drain_session_action_queue()
+
+    def _drain_session_action_queue(self) -> None:
+        """Apply any session-queued actions the monitor hasn't seen yet.
+
+        Each line in ``session_actions.jsonl`` is a JSON object with::
+
+            {
+                "id": "<unique-id, monotonic per session>",
+                "incident_id": "<the incident this resolves>",
+                "rule": "<rule name or null>",
+                "source": "rule" | "claude" | "manual",
+                "action": {"kind": "...", "set": {...}, "command": [...]},
+            }
+
+        The monitor applies each new line via ``supervisor.apply_action``
+        and advances the cursor. Failures are logged but never block the
+        main loop. We deliberately don't write a result file in this
+        first cut — the session reads ``state.json`` / the structured
+        log to confirm; result-tracking can come in a follow-up.
+        """
+        from autosentry.config import RuleAction
+
+        queue_path = self.cfg.resolve(self.cfg.dispatch.action_queue_path)
+        if not queue_path.exists():
+            return
+        cursor_path = self.cfg.resolve(self.cfg.dispatch.action_cursor_path)
+        last_id = ""
+        if cursor_path.exists():
+            try:
+                last_id = cursor_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                last_id = ""
+        try:
+            lines = queue_path.read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            log().error(f"session action queue read failed: {e}")
+            return
+        applied_id: str | None = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                log().error(f"session action queue: skipping malformed line: {line[:120]}")
+                continue
+            entry_id = str(entry.get("id", ""))
+            if not entry_id or entry_id <= last_id:
+                continue
+            try:
+                action = RuleAction.model_validate(entry.get("action") or {})
+            except Exception as e:  # noqa: BLE001
+                log().error(f"session action {entry_id}: invalid action — {e}")
+                applied_id = entry_id
+                continue
+            log().recovery(
+                f"session-dispatch applying {action.kind} "
+                f"(incident={entry.get('incident_id')}, source={entry.get('source', 'manual')})"
+            )
+            try:
+                self.supervisor.apply_action(action)
+                self.state.record_restart(
+                    reason=f"session-dispatch action {action.kind}",
+                    rule=entry.get("rule"),
+                    new_pid=self.supervisor.status().pid,
+                    incident_id=entry.get("incident_id"),
+                )
+                self.state.pid = self.supervisor.status().pid
+                self._save_state()
+            except Exception as e:  # noqa: BLE001
+                log().error(f"session-dispatch apply_action failed: {e}")
+            applied_id = entry_id
+        if applied_id and applied_id != last_id:
+            try:
+                cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                cursor_path.write_text(applied_id, encoding="utf-8")
+            except OSError as e:
+                log().error(f"session action cursor write failed: {e}")
 
     def _handle_exit(self, exit_code: int) -> bool:
         """Return True to continue (after restart), False to stop the monitor."""
@@ -326,9 +412,19 @@ class Monitor:
         # If a pending verification matches this detector, the fix regressed.
         self._handle_potential_regression(det)
 
+        # In session-dispatch mode the in-process healer doesn't run —
+        # the interactive Claude Code session reads pending incidents
+        # via ``autosentry watch --once`` and dispatches healers itself.
+        # We still write the incident folder, update state, and let the
+        # restart_policy safety net keep a dead child alive if the
+        # session isn't around to react.
+        session_dispatch = self.cfg.dispatch.mode == "session"
+
         # Refuse to attempt further fixes for a detector that has burned
         # through its budget. Still write the incident and notify.
-        if det.detector in self._budget_paused or self._budget_exhausted(det.detector):
+        if session_dispatch:
+            outcome = None
+        elif det.detector in self._budget_paused or self._budget_exhausted(det.detector):
             log().recovery(
                 f"healer budget exhausted for {det.detector!r} — recording incident "
                 f"but not attempting another fix until a manual approve lands"
@@ -411,6 +507,12 @@ class Monitor:
         self.last_incident_dir = folder
         if det.kind == "anomaly":
             self.state.record_anomaly(det.detector, det.message, incident_id=incident_id)
+        # Under session-dispatch mode, signal the interactive session
+        # that there's a new pending incident to handle. The mtime of
+        # this marker is the wake signal; the incident folder itself
+        # carries the payload.
+        if session_dispatch:
+            self._touch_session_dispatch_marker()
 
         # Notify.
         if (
@@ -732,6 +834,20 @@ class Monitor:
             apply_inbox_commands(self, self.inbox_path)
         except Exception as e:  # noqa: BLE001
             log().error(f"inbox consume failed: {e}")
+
+    def _touch_session_dispatch_marker(self) -> None:
+        """Signal the interactive Claude Code session that a new incident
+        is pending for it to handle. Under ``dispatch.mode: session``,
+        the session's Stop hook (or ``autosentry watch --once``) reads
+        this marker's mtime to know when to wake up. Cheap; cousin of
+        :meth:`_touch_inbound_marker`.
+        """
+        marker = self.cfg.resolve(self.cfg.dispatch.request_marker)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch(exist_ok=True)
+        except OSError as e:
+            log().error(f"session-dispatch marker touch failed: {e}")
 
     def _touch_inbound_marker(self) -> None:
         """Tell the dispatcher to poll Slack for replies on its next iteration.
