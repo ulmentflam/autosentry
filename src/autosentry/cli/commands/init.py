@@ -162,9 +162,28 @@ def init(
         return
 
     if yaml_dst.exists() and not force:
-        console.print(f"[{WARN}]config already exists at {yaml_dst}[/{WARN}]")
-        console.print("Pass --force to overwrite, or --upgrade to refresh defaults in place.")
-        raise typer.Exit(code=1)
+        # Interactive sessions get a choice instead of a hard exit — most of
+        # the time the operator running `init` on top of an existing config
+        # wanted to start over (a stale experiment, a half-built setup, etc.)
+        # but didn't think to pass --force. Offer reset / upgrade / cancel.
+        if is_interactive() and not non_interactive:
+            choice = _prompt_existing_config_action(yaml_dst)
+            if choice == "reset":
+                force = True  # fall through to the fresh-init flow below
+            elif choice == "upgrade":
+                changed = _upgrade_in_place(yaml_dst, yaml_src, force=False)
+                if changed:
+                    console.print(f"[{OK}]✓[/{OK}] refreshed {len(changed)} key(s) in {yaml_dst}")
+                else:
+                    hint("(no defaults needed refreshing)")
+                return
+            else:
+                console.print(f"[{DIM}](aborted; nothing changed)[/{DIM}]")
+                raise typer.Exit(code=1)
+        else:
+            console.print(f"[{WARN}]config already exists at {yaml_dst}[/{WARN}]")
+            console.print("Pass --force to overwrite, or --upgrade to refresh defaults in place.")
+            raise typer.Exit(code=1)
     # A pre-0.8 root-level config would be silently shadowed by a fresh one
     # written here. Don't clobber it — point the user at --upgrade (migrates
     # it) or --force (start clean in the new location).
@@ -551,6 +570,29 @@ def _run_skills_install(target: Path, *, scope: str) -> None:
     # touched by an init in a single repo. Idempotent; safe to re-run.
     if scope == "local":
         _install_session_stop_hook(target)
+
+
+def _prompt_existing_config_action(yaml_dst: Path) -> str:
+    """Returns one of: 'reset' | 'upgrade' | 'cancel'.
+
+    Default is 'reset' — the most common operator intent when re-running
+    init on top of an existing config is "start over". 'upgrade' refreshes
+    scalar defaults in place (the --upgrade flow). 'cancel' aborts.
+    """
+    console.print(f"\n[{WARN}]config already exists at {yaml_dst}[/{WARN}]")
+    console.print(
+        f"  [{INFO}]r[/{INFO}]eset    — overwrite with a fresh template, "
+        f"re-run the interactive walkthrough\n"
+        f"  [{INFO}]u[/{INFO}]pgrade  — refresh stale scalar defaults in place "
+        f"(keep your edits)\n"
+        f"  [{INFO}]c[/{INFO}]ancel   — leave it alone"
+    )
+    raw = ask("Choose [r]eset / [u]pgrade / [c]ancel", default="r").strip().lower()
+    if raw.startswith("u"):
+        return "upgrade"
+    if raw.startswith("c"):
+        return "cancel"
+    return "reset"
 
 
 def _install_session_stop_hook(target: Path) -> None:

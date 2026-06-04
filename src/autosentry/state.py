@@ -38,6 +38,23 @@ class RestartRecord(BaseModel):
     incident_id: str | None = None
 
 
+class ResetRecord(BaseModel):
+    """An audit row for one `autosentry reset` (or inter-stage reset) event.
+
+    Captures the counters as they stood at reset time so the reason is
+    legible after the fact — operators can answer "why did the budget
+    look full at 3am? someone reset; here's what was cleared".
+    """
+
+    time: str
+    reason: str
+    prior_restarts: int
+    prior_restarts_total: int
+    cleared_history: bool = False
+    stage: str | None = None  # set when triggered between pipeline stages
+    source: str = "manual"  # "manual" | "pipeline" | "test"
+
+
 class MonitorState(BaseModel):
     """In-memory shape of state.json. Anything not in here doesn't persist."""
 
@@ -67,6 +84,9 @@ class MonitorState(BaseModel):
     last_restart_at: str | None = None
     last_recovery_failed_for: str | None = None  # set when claude fix also failed
     restart_history: list[RestartRecord] = Field(default_factory=list)
+    # Manual + inter-stage resets. Capped at 200 like the others; older
+    # entries roll off. Plain-text mirror lives at .autosentry/reset.log.
+    reset_history: list[ResetRecord] = Field(default_factory=list)
 
     # Anomalies (rolling window of recent ones, capped)
     anomalies: list[AnomalyRecord] = Field(default_factory=list)
@@ -108,6 +128,72 @@ class MonitorState(BaseModel):
         )
         if len(self.restart_history) > 200:
             self.restart_history = self.restart_history[-200:]
+
+    def record_reset(
+        self,
+        reason: str,
+        *,
+        clear_history: bool = False,
+        stage: str | None = None,
+        source: str = "manual",
+    ) -> ResetRecord:
+        """Capture counters, append a ResetRecord, then zero what was asked.
+
+        Always clears ``self.restarts`` (the unverified-restart budget,
+        which is the whole point). ``restarts_total`` is preserved as an
+        audit-only running total. ``restart_history`` is preserved by
+        default; pass ``clear_history=True`` to drop it (the operator
+        opted into a full wipe with --full).
+
+        Returns the ResetRecord that was appended — callers (CLI,
+        pipeline runner) can mirror it to ``reset.log`` for ops to tail.
+        """
+        record = ResetRecord(
+            time=_now(),
+            reason=reason,
+            prior_restarts=self.restarts,
+            prior_restarts_total=self.restarts_total,
+            cleared_history=clear_history,
+            stage=stage,
+            source=source,
+        )
+        self.reset_history.append(record)
+        if len(self.reset_history) > 200:
+            self.reset_history = self.reset_history[-200:]
+        self.restarts = 0
+        # ``last_restart_at`` stays — it's a historical fact, not a
+        # counter. ``restart_history`` only clears when explicitly asked.
+        if clear_history:
+            self.restart_history = []
+        return record
+
+
+def append_reset_log(reset_log_path: Path, record: ResetRecord) -> None:
+    """Append a one-line summary of ``record`` to ``reset.log``.
+
+    Plain-text, append-only, line-buffered — designed for ``tail -F``.
+    Best-effort: a write failure here never aborts the reset (the
+    structured record in state.json is the source of truth; this file
+    is a convenience for ops).
+    """
+    reset_log_path.parent.mkdir(parents=True, exist_ok=True)
+    parts = [
+        record.time,
+        f"source={record.source}",
+        f"prior_restarts={record.prior_restarts}",
+        f"prior_total={record.prior_restarts_total}",
+    ]
+    if record.stage:
+        parts.append(f"stage={record.stage}")
+    if record.cleared_history:
+        parts.append("cleared_history=true")
+    parts.append(f"reason={record.reason!r}")
+    line = "  ".join(parts) + "\n"
+    try:
+        with reset_log_path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
 
 
 class StateStore:

@@ -29,6 +29,23 @@ process:
     backoff: exponential          # fixed | exponential
     cooldown_seconds: 60
 
+  # Multi-stage pipelines — uncomment to run two or more commands sequentially
+  # (e.g. an ML pipeline: Pre-train → SFT → GRPO). Each stage waits for the
+  # previous one to exit 0 before starting. Restart budgets reset per stage,
+  # so an SFT crash doesn't poison the pretrain budget. Mutually exclusive
+  # with `command:` above (set one or the other, not both).
+  #
+  # stages:
+  #   - name: pretrain
+  #     command: [python, train.py, --phase, pretrain]
+  #     restart_policy: { max_restarts: 3 }
+  #   - name: sft
+  #     command: [python, train.py, --phase, sft]
+  #     env:
+  #       LR: "1e-5"
+  #   - name: grpo
+  #     command: [python, train.py, --phase, grpo]
+
 monitor:
   # Cadence for status checks and tick-driven detectors (stall, etc.). The log
   # stream itself is processed line-by-line as fast as the process emits.

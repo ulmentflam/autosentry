@@ -37,7 +37,7 @@ def skills_install(
         "-t",
         help=(
             "Which tool(s) to install for. Repeat or use 'all'. "
-            "Choices: claude, opencode, codex, gemini, cursor, "
+            "Choices: claude, opencode, codex, gemini, cursor, pi, "
             "aider, continue, windsurf, zed, agents."
         ),
     ),

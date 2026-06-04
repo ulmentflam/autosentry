@@ -254,7 +254,39 @@ autosentry incidents show 2026-05-26T14-32-10Z-error-traceback
 autosentry probe                           # one-shot JSON liveness + pending incidents
 autosentry probe --inject-prompt           # emit a Stop-hook payload (used by session dispatch)
 autosentry doctor --fix                    # auto-repair broken or stale installs
+autosentry reset --reason "fixed config"   # clear the restart budget, keep audit history, relaunch
+autosentry reset --no-restart              # clear-and-exit (useful before a different `run` command)
 ```
+
+### Multi-step pipelines
+
+Run two or more commands sequentially under one supervisor — useful for
+ML training pipelines (pretrain → SFT → GRPO), data ETL chains, or any
+multi-phase job where each phase fails for different reasons and each
+deserves its own restart budget.
+
+```yaml
+process:
+  kind: local
+  stages:
+    - name: pretrain
+      command: [python, train.py, --phase, pretrain]
+      restart_policy: { max_restarts: 3 }
+    - name: sft
+      command: [python, train.py, --phase, sft]
+    - name: grpo
+      command: [python, train.py, --phase, grpo]
+```
+
+Each stage waits for the previous to exit `0`. Restart budgets reset
+between stages (mirrored to `.autosentry/logs/reset.log` with
+`source=pipeline`), so an SFT crash doesn't poison the pretrain budget.
+A stage that burns through its budget aborts the pipeline; remaining
+stages are marked `skipped` in `.autosentry/pipeline.json`. `autosentry
+status` shows per-stage progress when stages are configured.
+
+`process.stages` and `process.command` are mutually exclusive — pick
+one. Detectors and rules are shared across every stage.
 
 Bidirectional Slack (separate shell — the monitor stays offline-safe):
 
@@ -903,6 +935,7 @@ Supported tools:
 | **OpenAI Codex CLI**            | `.codex/prompts/autosentry.md`          | `/autosentry`    |
 | **Gemini (Antigravity / CLI)**  | `.gemini/commands/autosentry.toml`      | `/autosentry`    |
 | **Cursor**                      | `.cursor/commands/autosentry.md`        | `/autosentry`    |
+| **Pi (pi.dev)**                 | `.pi/prompts/autosentry.md`             | `/autosentry`    |
 | **Aider**                       | `.aider.conf.yml` (binds `AGENTS.md`)   | ambient context  |
 | **Continue.dev**                | `.continue/config.json`                 | `/autosentry`    |
 | **Windsurf (Cascade)**          | `.windsurfrules`                        | ambient context  |
@@ -999,7 +1032,7 @@ the [`CHANGELOG`](./CHANGELOG.md) calls them out.
 | Incident store + structured logs + slack file-outbox    | **stable**    |
 | `install.sh` one-liner                                  | **stable**    |
 | `autosentry update` mechanism                           | **stable**    |
-| AI-editor skills (Claude/OpenCode/Codex/Gemini/Cursor)  | **stable**    |
+| AI-editor skills (Claude/OpenCode/Codex/Gemini/Cursor/Pi) | **stable**  |
 | SLURM supervisor                                        | **stable**    |
 | Docker supervisor                                       | **stable**    |
 | Attach-to-PID supervisor                                | **stable**    |

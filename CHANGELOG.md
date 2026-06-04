@@ -6,6 +6,78 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-06-04
+
+### Added
+
+- **`autosentry reset` subcommand** — clear the unverified-restart
+  counter without losing audit history. When the monitor has parked
+  itself with "max restarts reached" and you've fixed the underlying
+  problem out-of-band, run `autosentry reset` to:
+
+  1. SIGTERM the supervised child if its pid is still alive (skipped
+     when nothing is running).
+  2. Zero `state.restarts` while preserving `restarts_total` and
+     `restart_history` so the prior failures stay readable.
+  3. Append a `ResetRecord` to `state.json` (`reset_history`) and
+     mirror a one-line entry to `.autosentry/logs/reset.log` for
+     `tail -F`-friendly auditing.
+  4. Relaunch the supervisor in the foreground (or `--no-restart` to
+     clear-and-exit).
+
+  Flags: `--reason "<text>"` lands in both the structured record and
+  the plain-text log. `--full --force` also drops `restart_history`
+  for a complete wipe. `autosentry status` now surfaces a `recent
+  resets` table next to `recent restarts`.
+
+- **`process.stages` — multi-step pipelines.** Configure two or more
+  commands that run sequentially under one supervisor (e.g. an ML
+  pipeline: pretrain → SFT → GRPO):
+
+  ```yaml
+  process:
+    kind: local
+    stages:
+      - name: pretrain
+        command: [python, train.py, --phase, pretrain]
+        restart_policy: { max_restarts: 3 }
+      - name: sft
+        command: [python, train.py, --phase, sft]
+      - name: grpo
+        command: [python, train.py, --phase, grpo]
+  ```
+
+  Each stage waits for the previous to exit 0; restart budgets reset
+  between stages (logged as `source="pipeline"` ResetRecords so the
+  audit trail is intact). A mid-pipeline failure aborts the rest;
+  remaining stages are marked `skipped` in `.autosentry/pipeline.json`.
+  Detectors and rules are shared across stages — the common case
+  (same script, different phases) stays ergonomic. `process.stages`
+  and `process.command` are mutually exclusive (config validator
+  rejects both being set). `autosentry status` shows a stage-by-stage
+  progress table when stages are configured.
+
+- **Interactive `autosentry init` over an existing config now prompts**
+  instead of hard-exiting. When run inside a TTY (Claude Code, an
+  operator terminal) on top of an existing `.autosentry/autosentry.yaml`,
+  the command offers reset / upgrade / cancel rather than the previous
+  `exit 1`. Non-interactive invocations and CI still error out cleanly
+  with the original message.
+
+- **`pi` (pi.dev) added to `autosentry skills install`** — drops the
+  `/autosentry`, `/autosentry-init`, and `/autosentry-update` prompt
+  templates into `.pi/prompts/` (or `~/.pi/agent/prompts/` with
+  `--scope global`). Pi joins Claude Code, OpenCode, Codex, Gemini,
+  Cursor, and Zed as a first-class supported editor.
+
+### Changed
+
+- `MonitorState` gains `reset_history: list[ResetRecord]` (capped at
+  200 like `restart_history`). State files written by 0.12.x load
+  unchanged; the field defaults to `[]`.
+- `ClaudeHealer._SKILL_MARKERS` recognizes `.pi/prompts/autosentry.md`
+  so interactive recovery mode activates for Pi sessions.
+
 ## [0.12.0] — 2026-05-31
 
 ### Added

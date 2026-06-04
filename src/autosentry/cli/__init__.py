@@ -72,6 +72,7 @@ def _register_commands() -> None:
         init,
         onboard,
         probe,
+        reset,
         run,
         session,
         skills,
