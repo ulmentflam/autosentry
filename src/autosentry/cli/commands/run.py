@@ -9,6 +9,7 @@ import typer
 from autosentry.cli import app
 from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 from autosentry.monitor import Monitor
+from autosentry.pipeline import PipelineRunner
 
 
 @app.command()
@@ -38,7 +39,10 @@ def run(
     pane.
     """
     cfg = load_config(config)
-    exit_code = Monitor(cfg).run()
+    if cfg.process.is_pipeline():
+        exit_code = PipelineRunner(cfg).run()
+    else:
+        exit_code = Monitor(cfg).run()
     # Propagate the child's exit code so ``one_shot`` and clean exits
     # under ``restart_on_failure`` surface correctly to a parent service
     # manager (issue #5).

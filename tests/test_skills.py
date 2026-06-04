@@ -178,4 +178,31 @@ def test_update_skill_wired_for_focused_tools_only():
     """The update skill ships for the same focused-tool set as init —
     the slash-command tools, not the ambient-context ones."""
     targets = skills.targets_for(None, skill_name="update")
-    assert {t.tool for t in targets} == {"claude", "opencode", "codex", "gemini", "cursor", "zed"}
+    assert {t.tool for t in targets} == {
+        "claude",
+        "opencode",
+        "codex",
+        "gemini",
+        "cursor",
+        "pi",
+        "zed",
+    }
+
+
+def test_pi_skills_land_under_dot_pi_prompts(tmp_path: Path):
+    """Pi reads prompt templates from .pi/prompts/<name>.md (local) and
+    ~/.pi/agent/prompts/<name>.md (global). Filename becomes the slash
+    command, so /autosentry, /autosentry-init, /autosentry-update map
+    1:1 to autosentry.md / autosentry-init.md / autosentry-update.md."""
+    skills.install(tmp_path, tools=["pi"], skill_name="all")
+    base = tmp_path / ".pi" / "prompts"
+    assert (base / "autosentry.md").is_file()
+    assert (base / "autosentry-init.md").is_file()
+    assert (base / "autosentry-update.md").is_file()
+    body = (base / "autosentry.md").read_text()
+    # Pi prompt templates use YAML frontmatter with description +
+    # argument-hint; the body routes off the AGENTS.md playbook.
+    assert body.startswith("---\n")
+    assert "description:" in body
+    assert "argument-hint:" in body
+    assert "/autosentry" in body

@@ -54,6 +54,7 @@ _SKILL_MARKERS = (
     ".codex/prompts/autosentry.md",
     ".gemini/commands/autosentry.toml",
     ".cursor/commands/autosentry.md",
+    ".pi/prompts/autosentry.md",
     "AGENTS.md",
 )
 

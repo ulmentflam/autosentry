@@ -58,6 +58,51 @@ class RestartPolicy(BaseModel):
 ProcessLifecycle = Literal["restart_always", "restart_on_failure", "one_shot"]
 
 
+class StageSpec(BaseModel):
+    """One stage in a multi-step pipeline (e.g. pretrain → SFT → GRPO).
+
+    Each stage runs sequentially; stage N starts only when stage N-1
+    exits cleanly. Restart budgets are per-stage — a stage that burns
+    through its budget aborts the pipeline rather than poisoning
+    subsequent stages. Detectors/rules are global (defined at the top
+    level) and apply to every stage; that keeps the common case
+    (same training script, different phases) ergonomic.
+    """
+
+    name: str
+    command: list[str]
+    cwd: str | None = None  # defaults to process.cwd
+    env: dict[str, str] = Field(default_factory=dict)
+    restart_policy: RestartPolicy | None = None  # falls back to process.restart_policy
+    lifecycle: ProcessLifecycle | None = None  # falls back to process.lifecycle
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        if not v or not v.strip():
+            msg = "stage 'name' is required and must be non-empty"
+            raise ValueError(msg)
+        # Stage names land in file paths (incident tags, vault notes) so
+        # keep them simple. Lowercase letters, digits, dashes, underscores.
+        if not re.fullmatch(r"[A-Za-z0-9_\-]+", v):
+            msg = f"stage name {v!r} must match [A-Za-z0-9_-]+ (no spaces or punctuation)"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("command")
+    @classmethod
+    def _validate_command(cls, v: list[str]) -> list[str]:
+        if not v:
+            msg = "stage 'command' is required and must be non-empty"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _coerce_env(cls, v):
+        return {} if v is None else v
+
+
 class ProcessConfig(BaseModel):
     kind: ProcessKind = "local"
     command: list[str] = Field(default_factory=list)
@@ -67,6 +112,12 @@ class ProcessConfig(BaseModel):
     # See :data:`ProcessLifecycle`. Default ``restart_on_failure`` so a clean
     # exit no longer leaves the monitor sitting idle indefinitely (#5).
     lifecycle: ProcessLifecycle = "restart_on_failure"
+    # Optional pipeline of sequentially-run stages. When set, ``command``
+    # must be empty; the PipelineRunner orchestrates Monitor invocations
+    # per stage, advancing on exit code 0 and aborting on healer
+    # exhaustion. Restart budgets reset between stages (see
+    # :class:`autosentry.state.ResetRecord` with source="pipeline").
+    stages: list[StageSpec] = Field(default_factory=list)
     # Kind-specific extras live here so we don't need a discriminated union yet.
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -76,6 +127,36 @@ class ProcessConfig(BaseModel):
         # YAML keys present but empty parse as None (e.g. `extra:` with no
         # children). Treat that as an empty dict so the schema stays tolerant.
         return {} if v is None else v
+
+    @field_validator("stages", mode="before")
+    @classmethod
+    def _coerce_stages_none(cls, v):
+        return [] if v is None else v
+
+    def model_post_init(self, __context: Any) -> None:  # noqa: D401, ANN001
+        # Mutual-exclusion between ``command`` and ``stages``: either the
+        # single-process flow or the pipeline flow, never both. We accept
+        # bare-default ``command=[]`` alongside ``stages`` (a fresh init
+        # template ships with an empty command list).
+        if self.stages and self.command:
+            msg = (
+                "process.command and process.stages are mutually exclusive — "
+                "use one or the other. (Pipelines should set only "
+                "process.stages; each stage carries its own command.)"
+            )
+            raise ValueError(msg)
+        # Stage names must be unique — they're used as keys in pipeline.json
+        # and as labels on incidents/notifications.
+        if self.stages:
+            seen: set[str] = set()
+            for s in self.stages:
+                if s.name in seen:
+                    msg = f"duplicate stage name {s.name!r} in process.stages"
+                    raise ValueError(msg)
+                seen.add(s.name)
+
+    def is_pipeline(self) -> bool:
+        return bool(self.stages)
 
 
 class MonitorConfig(BaseModel):
