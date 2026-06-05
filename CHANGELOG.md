@@ -6,6 +6,55 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-06-04
+
+### Changed
+
+- **Higher default budgets — autosentry now leans toward "keep
+  trying" out of the box.** The previous defaults gave up too
+  quickly for long-running workloads (ML training, multi-hour data
+  pipelines) while doing nothing to prevent API spam from a
+  genuinely stuck healer. New defaults:
+
+  | knob                                            | was   | now    | meaning |
+  |-------------------------------------------------|-------|--------|---------|
+  | `process.restart_policy.max_restarts`           | `10`  | `50`   | consecutive unverified restarts before giving up |
+  | `healing.budget.max_attempts_per_detector_per_hour` | `5` | `60` | rate-cap on healer attempts per detector (1/min) |
+  | `healing.budget.max_wall_seconds_per_incident`  | `600` | `7200` | 2-hour budget per incident |
+
+  Existing configs keep their explicit values — only fresh inits and
+  `init --upgrade` pick up the new defaults (and `--upgrade` prompts
+  per-key, so you can decline).
+
+- **`max_restarts` is now documented as a *kill-switch*, not a
+  budget.** The counter (`state.restarts`) zeros on every fix that
+  resolves as `kept` in the attempts ledger, so a productive healer
+  runs the supervisor indefinitely; `max_restarts` only trips when
+  the healer can't land a kept fix for that many restarts in a row.
+  Set it to `0` to disable the kill-switch entirely (the supervisor
+  will keep restarting until something external stops it).
+
+- **`healing.escalate_to_claude_after` decouples from
+  `max_restarts // 5`.** Previously the escalation threshold scaled
+  with the cap (so a higher `max_restarts` would push Claude
+  escalation later — exactly wrong). Now it falls back to a literal
+  `2` regardless of `max_restarts`: rules get two cheap shots at
+  known transients, then the agentic flow takes over.
+
+- New helpers in `autosentry.state`: `budget_exhausted(restarts,
+  max_restarts)` (single source of truth for the kill-switch check;
+  honors the `0 = unlimited` sentinel) and `format_budget(max_restarts)`
+  (renders `∞` for the unlimited case, otherwise the integer).
+  Threaded through Monitor, status, TUI, doctor, and the incident
+  report so every surface displays the same thing.
+
+### Internal
+
+- `MonitorState.max_restarts` default `10 → 50` to match
+  `RestartPolicy.max_restarts`. Existing `state.json` files are
+  unaffected — the value is overridden from cfg on every Monitor
+  start.
+
 ## [0.13.0] — 2026-06-04
 
 ### Added

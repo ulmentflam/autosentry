@@ -35,11 +35,20 @@ LEGACY_CONFIG_PATH = Path("autosentry.yaml")
 
 
 class RestartPolicy(BaseModel):
-    # Default 10: enough headroom for the healer to land several
-    # recoveries before giving up. The agentic flow is the main fix
-    # path — rules get two cheap shots, then Claude takes over (see
-    # `escalate_to_claude_after`, default `max_restarts // 5` = 2).
-    max_restarts: int = 10
+    # ``max_restarts`` is *not* a raw cap — it's the kill-switch for
+    # consecutive **unverified** restarts. The counter at
+    # ``state.restarts`` zeros on every fix attempt that resolves as
+    # ``kept`` in the attempts ledger, so a productive healer keeps the
+    # supervisor running indefinitely; only a healer that can't land a
+    # kept fix for ``max_restarts`` restarts in a row trips this.
+    #
+    # Default 50: high enough that long-running ML workloads (where
+    # transients heal but slowly) never trip it, low enough that a
+    # truly broken healer eventually stops thrashing instead of
+    # spamming the API forever. Set to ``0`` to disable the kill-switch
+    # entirely (the supervisor will keep restarting until something
+    # external stops it).
+    max_restarts: int = 50
     backoff: Literal["fixed", "exponential"] = "exponential"
     cooldown_seconds: int = 60
 
@@ -308,10 +317,25 @@ class HealerBudget(BaseModel):
     regresses, autosentry stops trying and just writes incidents +
     notifies, until a manual ``approve`` lands in the slack inbox or
     the rolling window passes.
+
+    Defaults are chosen to be as permissive as possible without
+    risking API spam from a stuck-loop healer:
+
+    - ``max_attempts_per_detector_per_hour: 60`` — one healer attempt
+      per minute per detector. Generous enough that a long-running
+      workload with transient noise never feels capped; bounded enough
+      that a detector firing every second still won't burn through
+      thousands of Claude calls per hour.
+    - ``max_wall_seconds_per_incident: 7200`` — two-hour budget per
+      incident. Long enough for slow ML-training crash loops to land
+      a kept fix; short enough that one stuck incident doesn't burn
+      forever.
+
+    Set either knob to ``0`` to disable that bound entirely.
     """
 
-    max_attempts_per_detector_per_hour: int = 5
-    max_wall_seconds_per_incident: int = 600
+    max_attempts_per_detector_per_hour: int = 60
+    max_wall_seconds_per_incident: int = 7200
 
 
 class DispatchConfig(BaseModel):
