@@ -29,7 +29,7 @@ from autosentry.ledger import Attempt, AttemptsLedger, now_iso
 from autosentry.logger import SentryLogger, log
 from autosentry.notifiers import build_notifiers
 from autosentry.notifiers.base import Notification
-from autosentry.state import MonitorState, StateStore
+from autosentry.state import MonitorState, StateStore, budget_exhausted, format_budget
 from autosentry.supervisors import supervisor_for
 from autosentry.supervisors.base import LogLine
 from autosentry.vault import VaultStore
@@ -137,11 +137,13 @@ class Monitor:
         explicit = self.cfg.healing.escalate_to_claude_after
         if explicit is not None and explicit > 0:
             return explicit
-        # Default: a fifth of the budget, rounded down (with a floor of
-        # 1). With max_restarts=10 that's 2 unverified restarts. The
-        # agentic flow is the main fix path — rules get a couple of
-        # cheap shots at known transients, then Claude takes over.
-        return max(1, self.state.max_restarts // 5)
+        # Default: 2 unverified restarts before Claude takes over.
+        # Decoupled from ``max_restarts`` so the unlimited-budget
+        # default doesn't push Claude escalation off to infinity —
+        # rules get two cheap shots at known transients, then the
+        # agentic flow runs as the main fix path. Override via
+        # ``healing.escalate_to_claude_after``.
+        return 2
 
     # ----- public lifecycle -------------------------------------------------
 
@@ -373,9 +375,10 @@ class Monitor:
         # exit_code detector picks this up too, but we may need to call it explicitly
         # to give a detection if the user didn't configure one. Let detectors fire on
         # status; the actual restart decision goes through the standard healer path.
-        # If no healer fires (and we're below max_restarts), default behavior is to
-        # keep watching. If process is dead and there are no rules, leave it.
-        if self.state.restarts >= self.state.max_restarts:
+        # If no healer fires and the unverified-restart budget hasn't
+        # been capped (the default), keep watching. Only stop when an
+        # explicit cap has been set and we've burned through it.
+        if budget_exhausted(self.state.restarts, self.state.max_restarts):
             log().error(f"max restarts ({self.state.max_restarts}) reached — giving up")
             self._notify(
                 "exit",
@@ -405,7 +408,7 @@ class Monitor:
         """
         if self._stop:
             return
-        if self.state.restarts >= self.state.max_restarts:
+        if budget_exhausted(self.state.restarts, self.state.max_restarts):
             log().error(
                 f"no recovery applied for {det.detector!r} and max restarts "
                 f"({self.state.max_restarts}) reached — stopping monitor"
@@ -421,7 +424,7 @@ class Monitor:
         cooldown = self.cfg.process.restart_policy.cooldown_seconds
         log().recovery(
             f"restart_policy fallback for {det.detector!r} — restart "
-            f"{self.state.restarts + 1}/{self.state.max_restarts} "
+            f"{self.state.restarts + 1}/{format_budget(self.state.max_restarts)} "
             f"after {cooldown}s cooldown (no rule + no Claude action)"
         )
         if cooldown:
@@ -445,7 +448,10 @@ class Monitor:
         self._notify(
             "recovery",
             f"restart_policy fallback for {det.detector}",
-            f"restart {self.state.restarts}/{self.state.max_restarts} — no healer action applied",
+            (
+                f"restart {self.state.restarts}/{format_budget(self.state.max_restarts)} "
+                "— no healer action applied"
+            ),
         )
 
     def _fire_detection(self, det: Detection) -> None:
@@ -496,9 +502,10 @@ class Monitor:
                     )
                     self._force_claude_next.discard(det.detector)
                 else:
+                    budget = format_budget(self.state.max_restarts)
                     log().recovery(
                         f"forcing Claude diagnosis "
-                        f"(unverified restarts {self.state.restarts}/{self.state.max_restarts}, "
+                        f"(unverified restarts {self.state.restarts}/{budget}, "
                         f"threshold {self._escalation_threshold})"
                     )
                 outcome = self.claude_healer.attempt(
@@ -829,7 +836,7 @@ class Monitor:
             if self.state.restarts > 0:
                 log().recovery(
                     f"verified fix — resetting unverified-restart counter "
-                    f"(was {self.state.restarts}/{self.state.max_restarts}); "
+                    f"(was {self.state.restarts}/{format_budget(self.state.max_restarts)}); "
                     f"all-time restarts={self.state.restarts_total}"
                 )
             self.state.restarts = 0
@@ -909,11 +916,12 @@ class Monitor:
         if self.state.restarts < self._escalation_threshold:
             return
         self._escalation_active = True
+        budget = format_budget(self.state.max_restarts)
         self._notify(
             "recovery",
             "healer escalation",
             (
-                f"unverified restarts {self.state.restarts}/{self.state.max_restarts} — "
+                f"unverified restarts {self.state.restarts}/{budget} — "
                 f"forcing Claude diagnosis on the next detection (threshold "
                 f"{self._escalation_threshold}). Cleared on the next kept fix."
             ),

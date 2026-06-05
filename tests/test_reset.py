@@ -14,6 +14,8 @@ from autosentry.state import (
     RestartRecord,
     StateStore,
     append_reset_log,
+    budget_exhausted,
+    format_budget,
 )
 
 runner = CliRunner()
@@ -95,6 +97,33 @@ def test_state_round_trips_reset_history(tmp_path: Path):
     assert reloaded.restarts == 0
     assert len(reloaded.reset_history) == 1
     assert reloaded.reset_history[0].reason == "manual reset before merge"
+
+
+# ----- budget helpers (0 = unlimited sentinel) -----------------------------
+
+
+def test_budget_exhausted_with_zero_is_never_exhausted():
+    # Default of 0 means unlimited — the supervisor keeps running no
+    # matter how many restarts accrue. This is the opt-out lever for
+    # the kill-switch (the default is 50, not 0).
+    assert budget_exhausted(restarts=0, max_restarts=0) is False
+    assert budget_exhausted(restarts=10_000, max_restarts=0) is False
+    # Negative is treated the same as 0 — defensive against bad config.
+    assert budget_exhausted(restarts=1, max_restarts=-1) is False
+
+
+def test_budget_exhausted_with_positive_cap_trips_at_or_above():
+    assert budget_exhausted(restarts=0, max_restarts=10) is False
+    assert budget_exhausted(restarts=9, max_restarts=10) is False
+    assert budget_exhausted(restarts=10, max_restarts=10) is True
+    assert budget_exhausted(restarts=11, max_restarts=10) is True
+
+
+def test_format_budget_renders_infinity_for_zero():
+    assert format_budget(0) == "∞"
+    assert format_budget(-1) == "∞"
+    assert format_budget(50) == "50"
+    assert format_budget(1) == "1"
 
 
 # ----- CLI behavior --------------------------------------------------------

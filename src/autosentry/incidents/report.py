@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from autosentry.state import format_budget
+
 if TYPE_CHECKING:
     from autosentry.incidents.store import IncidentWrite
 
@@ -16,7 +18,7 @@ def render_report(w: IncidentWrite, *, folder: Path) -> str:
     parts.append(f"# Incident — {ts} — {w.kind} / {w.detector}\n")
     parts.append(
         f"**Process:** {w.process_kind} · `{' '.join(w.command)}`  \n"
-        f"**PID:** {w.pid}  **Restart #:** {w.restart_index}/{w.max_restarts}  \n"
+        f"**PID:** {w.pid}  **Restart #:** {w.restart_index}/{format_budget(w.max_restarts)}  \n"
         f"**Detector:** `{w.detector}` ({w.kind})  \n"
     )
     if w.rule_match:

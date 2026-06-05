@@ -25,7 +25,13 @@ process:
   #   BATCH_SIZE: "8"
 
   restart_policy:
-    max_restarts: 10
+    # max_restarts is the kill-switch on *consecutive unverified*
+    # restarts — the counter zeros on every kept fix, so a working
+    # healer keeps the supervisor running indefinitely. Default 50:
+    # high enough that long ML jobs with transient noise never trip
+    # it, low enough that a truly broken healer eventually gives up.
+    # Set to 0 to disable the kill-switch entirely.
+    max_restarts: 50
     backoff: exponential          # fixed | exponential
     cooldown_seconds: 60
 

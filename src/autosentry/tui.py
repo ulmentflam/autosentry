@@ -29,7 +29,7 @@ from rich.table import Table
 from rich.text import Text
 
 from autosentry.config import AutoSentryConfig
-from autosentry.state import StateStore
+from autosentry.state import StateStore, format_budget
 
 # ----- snapshot helpers ----------------------------------------------------
 
@@ -58,7 +58,7 @@ def gather_snapshot(
     state_summary: list[tuple[str, str]] = [
         ("pid", str(state.pid) if state.pid is not None else "—"),
         ("uptime", uptime),
-        ("restarts", f"{state.restarts} / {state.max_restarts}"),
+        ("restarts", f"{state.restarts} / {format_budget(state.max_restarts)}"),
         ("last heartbeat", heartbeat),
         ("last exit code", str(state.last_exit_code) if state.last_exit_code is not None else "—"),
         ("recent anomalies", str(len(state.anomalies))),

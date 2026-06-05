@@ -248,7 +248,8 @@ def test_stage_specific_restart_policy_overrides_process_default(tmp_path: Path)
     runner = PipelineRunner(cfg)
     cheap = runner._stage_scoped_cfg(cfg.process.stages[0])
     expensive = runner._stage_scoped_cfg(cfg.process.stages[1])
-    # cheap inherits the process default (10 by default RestartPolicy)
-    assert cheap.process.restart_policy.max_restarts == 10
+    # cheap inherits the process default (50 by default RestartPolicy —
+    # see config.RestartPolicy docstring on the kill-switch semantics)
+    assert cheap.process.restart_policy.max_restarts == 50
     # expensive uses its own
     assert expensive.process.restart_policy.max_restarts == 1

@@ -71,16 +71,17 @@ class MonitorState(BaseModel):
     # Restart bookkeeping
     # Unverified-restart counter. Resets to 0 whenever a fix attempt
     # resolves as ``kept`` in the attempts ledger. Used for both the
-    # give-up check (``restarts >= max_restarts``) and the
+    # give-up check (see :func:`budget_exhausted`) and the
     # force-Claude escalation threshold. Successful heals shouldn't
     # consume budget — new runs after a heal start with a fresh slate.
     restarts: int = 0
     # All-time counter; never resets. Audit-only.
     restarts_total: int = 0
-    # Sentinel default — overridden from ``cfg.process.restart_policy``
-    # on Monitor.__init__. The authoritative default lives in
-    # ``config.RestartPolicy.max_restarts``.
-    max_restarts: int = 10
+    # Overridden from ``cfg.process.restart_policy`` on Monitor.__init__;
+    # the authoritative default lives in ``config.RestartPolicy.max_restarts``.
+    # This counter is the unverified-restart *kill-switch*, not a raw
+    # cap — see :func:`budget_exhausted`. ``0`` disables it entirely.
+    max_restarts: int = 50
     last_restart_at: str | None = None
     last_recovery_failed_for: str | None = None  # set when claude fix also failed
     restart_history: list[RestartRecord] = Field(default_factory=list)
@@ -166,6 +167,27 @@ class MonitorState(BaseModel):
         if clear_history:
             self.restart_history = []
         return record
+
+
+def budget_exhausted(restarts: int, max_restarts: int) -> bool:
+    """Has the unverified-restart counter hit the cap?
+
+    ``max_restarts <= 0`` is the sentinel for "unlimited" — the default.
+    Centralized so every caller (Monitor, doctor, vault) agrees on the
+    semantics: ``0`` and any negative value mean no cap, never exhausted.
+    """
+    if max_restarts <= 0:
+        return False
+    return restarts >= max_restarts
+
+
+def format_budget(max_restarts: int) -> str:
+    """Render ``max_restarts`` for human-facing strings.
+
+    ``0`` (or negative) renders as ``∞`` — the supervisor will keep
+    trying without a cap. Positive values render as-is.
+    """
+    return "∞" if max_restarts <= 0 else str(max_restarts)
 
 
 def append_reset_log(reset_log_path: Path, record: ResetRecord) -> None:

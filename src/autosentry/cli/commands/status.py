@@ -11,7 +11,7 @@ from autosentry.cli import app
 from autosentry.cli.style import console
 from autosentry.config import DEFAULT_CONFIG_PATH, load_config
 from autosentry.pipeline import load_pipeline_state
-from autosentry.state import StateStore
+from autosentry.state import StateStore, format_budget
 
 
 @app.command()
@@ -68,7 +68,7 @@ def status(
     table.add_row("started_at", str(state.started_at))
     table.add_row("last_heartbeat", str(state.last_heartbeat))
     table.add_row("last_exit_code", str(state.last_exit_code))
-    table.add_row("restarts", f"{state.restarts} / {state.max_restarts}")
+    table.add_row("restarts", f"{state.restarts} / {format_budget(state.max_restarts)}")
     table.add_row("anomalies (recent)", str(len(state.anomalies)))
     console.print(table)
 

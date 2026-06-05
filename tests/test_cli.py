@@ -161,7 +161,7 @@ def test_init_upgrade_migrates_and_refreshes_legacy_root_config(
 ):
     """--upgrade on a pre-0.8 root-level config migrates it into
     .autosentry/ (comments + customizations preserved) and bumps the stale
-    ``max_restarts: 5`` to the current template default (10)."""
+    ``max_restarts: 5`` to the current template default (50)."""
     legacy = isolated_cwd / "autosentry.yaml"
     legacy.write_text(
         dedent(
@@ -184,7 +184,7 @@ def test_init_upgrade_migrates_and_refreshes_legacy_root_config(
     assert new_path.is_file()
     assert not legacy.exists()
     body = new_path.read_text()
-    assert "max_restarts: 10" in body
+    assert "max_restarts: 50" in body
     # User's customization must survive intact.
     assert "my_special_script.py" in body
     # And the top comment too (proves ruamel round-trip preserved comments).
@@ -211,7 +211,7 @@ def test_init_upgrade_inserts_missing_key(runner: CliRunner, isolated_cwd: Path)
     # process.restart_policy was absent — the upgrade should have inserted
     # cooldown_seconds and max_restarts (both ship in the template).
     assert "cooldown_seconds: 60" in body
-    assert "max_restarts: 10" in body
+    assert "max_restarts: 50" in body
 
 
 def test_init_upgrade_noop_when_already_current(runner: CliRunner, isolated_cwd: Path):

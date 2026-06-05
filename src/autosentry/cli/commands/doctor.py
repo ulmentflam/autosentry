@@ -689,12 +689,19 @@ def _skill_present(cfg) -> bool:  # noqa: ANN001
 
 
 def _check_healer_budget(cfg) -> Check:  # noqa: ANN001
+    from autosentry.state import format_budget
+
     max_restarts = cfg.process.restart_policy.max_restarts
     explicit = cfg.healing.escalate_to_claude_after
-    threshold = explicit if explicit is not None and explicit > 0 else max(1, max_restarts // 2)
+    # Mirror Monitor._resolve_escalation_threshold: explicit override
+    # wins; default falls back to literal 2 (decoupled from
+    # max_restarts so the kill-switch can be large without pushing
+    # Claude escalation off to infinity).
+    threshold = explicit if explicit is not None and explicit > 0 else 2
+    cap = format_budget(max_restarts)
     detail = (
-        f"escalate to Claude at {threshold}/{max_restarts} unverified restarts · "
-        f"give up at {max_restarts}/{max_restarts}"
+        f"escalate to Claude at {threshold} unverified restarts · "
+        f"give up at {cap} consecutive unverified restarts"
     )
     return Check(name="healer budget", status="ok", detail=detail)
 

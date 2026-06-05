@@ -142,7 +142,13 @@ def test_escalation_threshold_default_is_half_max_restarts(tmp_path: Path, monke
     assert monitor._escalation_threshold == 2
 
 
-def test_escalation_threshold_falls_back_to_fifth_when_unset(tmp_path: Path, monkeypatch):
+def test_escalation_threshold_default_decoupled_from_max_restarts(tmp_path: Path, monkeypatch):
+    """The default escalation threshold is a literal 2, independent of
+    ``max_restarts``. Decoupling matters now that the default
+    ``max_restarts`` is high (50): if we still computed ``// 5``,
+    Claude wouldn't take over until restart 10 — rules would
+    monopolize the first half of the kill-switch budget. Literal 2
+    keeps the agentic flow as the main fix path."""
     monkeypatch.chdir(tmp_path)
     yaml = tmp_path / "autosentry.yaml"
     yaml.write_text(
@@ -152,7 +158,7 @@ def test_escalation_threshold_falls_back_to_fifth_when_unset(tmp_path: Path, mon
               kind: local
               command: ["true"]
               restart_policy:
-                max_restarts: 10
+                max_restarts: 50
             healing:
               claude:
                 enabled: false
@@ -162,12 +168,14 @@ def test_escalation_threshold_falls_back_to_fifth_when_unset(tmp_path: Path, mon
     cfg = load_config(yaml)
     monitor = Monitor(cfg)
     monitor.supervisor = MagicMock()
-    # Default posture is agentic — rules get two cheap shots, then
-    # Claude takes over. max_restarts // 5 = 2 with default 10.
     assert monitor._escalation_threshold == 2
 
 
-def test_escalation_threshold_has_floor_of_one(tmp_path: Path, monkeypatch):
+def test_escalation_threshold_still_2_when_max_restarts_is_small(tmp_path: Path, monkeypatch):
+    """Even with a tight kill-switch (max_restarts=3), escalation
+    still fires at 2 unverified restarts. The old behavior floored
+    ``3 // 5 = 0`` to 1; the new literal-2 default holds across small
+    and large caps alike — no special-case logic needed."""
     monkeypatch.chdir(tmp_path)
     yaml = tmp_path / "autosentry.yaml"
     yaml.write_text(
@@ -187,8 +195,7 @@ def test_escalation_threshold_has_floor_of_one(tmp_path: Path, monkeypatch):
     cfg = load_config(yaml)
     monitor = Monitor(cfg)
     monitor.supervisor = MagicMock()
-    # 3 // 5 = 0, floored to 1 so we still escalate eventually.
-    assert monitor._escalation_threshold == 1
+    assert monitor._escalation_threshold == 2
 
 
 def test_maybe_flip_escalation_flips_at_threshold(tmp_path: Path, monkeypatch):
