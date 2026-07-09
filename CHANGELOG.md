@@ -6,6 +6,28 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stall detector no longer kill-loops a healthy process after a
+  restart ([#9]).** Two bugs compounded here. First, the local
+  supervisor's log iterator terminated on the *first* child's
+  end-of-stream sentinel, so after any restart the monitor stopped
+  consuming log lines entirely — detectors never saw the new child's
+  output. The iterator now treats the sentinel like a quiet tick and
+  keeps reading the shared queue (real exits are still detected via
+  `status()`). Second, detectors carried per-child state across
+  restarts: a `stall` detector kept the dead child's last metric value
+  and no-progress clock, then fired a spurious stall
+  `no_progress_seconds` after every restart, restarting a perfectly
+  healthy child until `max_restarts` was exhausted. Detectors now get
+  an `on_child_restart()` lifecycle hook; the monitor calls it whenever
+  the supervised child is swapped (rule/healer/session action,
+  `restart_policy` fallback, or external auto-restart), and the stall
+  detector uses it to reset its tracked value and clocks so the fresh
+  child is observed from a clean slate.
+
+[#9]: https://github.com/ulmentflam/autosentry/issues/9
+
 ## [0.13.1] — 2026-06-04
 
 ### Changed

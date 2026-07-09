@@ -31,7 +31,7 @@ from autosentry.notifiers import build_notifiers
 from autosentry.notifiers.base import Notification
 from autosentry.state import MonitorState, StateStore, budget_exhausted, format_budget
 from autosentry.supervisors import supervisor_for
-from autosentry.supervisors.base import LogLine
+from autosentry.supervisors.base import LogLine, ProcessStatus
 from autosentry.vault import VaultStore
 from autosentry.vault.narrator import Narrator
 from autosentry.vault.patterns import PatternIndex
@@ -132,6 +132,17 @@ class Monitor:
         self._state_save_next_attempt: float = 0.0
         self._state_save_last_error: str | None = None
         self._state_save_suppressed: int = 0
+        # ``started_at`` stamp of the child the detectors are currently
+        # tracking. Every supervisor sets a fresh stamp in ``start()``, so
+        # when the supervisor swaps in a new child (rule/healer/session
+        # restart, restart_policy fallback, or an external auto-restart)
+        # this drifts from ``supervisor.status().started_at`` and we reset
+        # per-child detector state — otherwise a stall detector carries the
+        # dead child's frozen progress value forward and kill-loops the
+        # healthy replacement (issue #9). Keyed on ``started_at`` rather
+        # than pid because some supervisors (docker) report ``pid=None``.
+        # ``None`` until the first child is spawned.
+        self._detector_child_started_at: str | None = None
 
     def _resolve_escalation_threshold(self) -> int:
         explicit = self.cfg.healing.escalate_to_claude_after
@@ -169,6 +180,10 @@ class Monitor:
         status = self.supervisor.start()
         self.state.pid = status.pid
         self.state.started_at = status.started_at
+        # The detectors are, from now on, tracking this child. Seed the
+        # restart-watch stamp so the first genuine restart (not this initial
+        # spawn) triggers a detector reset. See ``_reset_detectors_for_restart``.
+        self._detector_child_started_at = status.started_at
         self._save_state()
         # Vault: write the supervisor-session note + the initial child-
         # run note for this first process spawn. Subsequent restarts
@@ -247,8 +262,34 @@ class Monitor:
             if d is not None:
                 self._fire_detection(d)
 
+    def _reset_detectors_for_restart(self, status: ProcessStatus) -> None:
+        """Reset per-child detector state when the child has been swapped.
+
+        Called once per tick. Covers every restart path — rule/healer/
+        session actions, the restart_policy fallback, and external
+        auto-restarts — with one check rather than threading a hook through
+        each call site. Keyed on ``started_at`` (fresh per ``start()`` in
+        every supervisor); a no-op while it is unchanged or the child is
+        momentarily absent, so a brief gap between stop and start doesn't
+        spuriously reset twice.
+        """
+        new_stamp = status.started_at
+        if not status.running or new_stamp is None or new_stamp == self._detector_child_started_at:
+            return
+        log().info(
+            f"child restart detected (started_at {self._detector_child_started_at} → "
+            f"{new_stamp}) — resetting detector state"
+        )
+        for det in self.detectors:
+            det.on_child_restart()
+        self._detector_child_started_at = new_stamp
+
     def _tick(self) -> None:
         status = self.supervisor.status()
+        # Before running the detectors, notice whether the child was
+        # swapped out since the last tick and give detectors a clean slate
+        # if so (issue #9).
+        self._reset_detectors_for_restart(status)
         for det in self.detectors:
             d = det.observe_status(status)
             if d is not None:
