@@ -17,7 +17,7 @@ jobs:
     name: build distributions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -111,14 +111,14 @@ jobs:
     continue-on-error: true # release is already published; keep the run green
     steps:
       - name: Checkout autosentry (formula scaffold)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           path: autosentry
           persist-credentials: false # read-only; never push back to this repo
 
       - name: Checkout homebrew-tap
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ulmentflam/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
