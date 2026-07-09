@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-07-08
+
 ### Fixed
 
 - **Stall detector no longer kill-loops a healthy process after a
