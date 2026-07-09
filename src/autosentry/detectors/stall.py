@@ -40,6 +40,22 @@ class StallDetector(Detector):
         self._last_line_at: float = time.monotonic()
         self._buf: deque[str] = deque(maxlen=_CTX)
 
+    def on_child_restart(self) -> None:
+        """Drop the previous child's progress state on restart.
+
+        Without this the tracked metric stays frozen at the old child's
+        last value and the no-progress clock keeps ticking across the
+        restart, so a spurious stall fires ``no_progress_seconds`` after
+        every restart — a kill loop on a healthy new child (issue #9).
+        Both the value-tracking and the "no output at all" clocks are
+        reset so the fresh child starts from zero state.
+        """
+        now = time.monotonic()
+        self._last_progress_value = None
+        self._last_progress_at = now
+        self._last_line_at = now
+        self._buf.clear()
+
     def observe_line(self, line: LogLine) -> Detection | None:
         self._buf.append(line.text)
         self._last_line_at = time.monotonic()

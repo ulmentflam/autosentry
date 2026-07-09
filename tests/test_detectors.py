@@ -92,3 +92,38 @@ def test_stall_detector_no_output():
     det = d.observe_tick()
     assert det is not None
     assert det.kind == "anomaly"
+
+
+def test_stall_detector_tracks_metric_progress():
+    d = StallDetector(metric_regex=r"step\s+(\d+)/", no_progress_seconds=1800)
+    d.observe_line(_line("step 9/312841 | loss 3.2"))
+    assert d._last_progress_value == "9"
+
+
+def test_stall_detector_resets_on_child_restart():
+    """Issue #9: on restart the tracked value and no-progress clock must
+    reset so a spurious stall doesn't fire on the healthy replacement."""
+    import time
+
+    d = StallDetector(metric_regex=r"step\s+(\d+)/", no_progress_seconds=1800)
+    d.observe_line(_line("step 9/312841 | loss 3.2"))
+    # Simulate the old child having gone quiet long past the threshold.
+    d._last_progress_at = time.monotonic() - 5000
+    d._last_line_at = time.monotonic() - 5000
+    # Without a reset this tick would fire a (spurious) stall.
+    assert d.observe_tick() is not None
+
+    # Restart: the detector must forget the dead child's frozen value and
+    # restart its no-progress clock from now.
+    d.on_child_restart()
+    assert d._last_progress_value is None
+    assert time.monotonic() - d._last_progress_at < 1.0
+    assert time.monotonic() - d._last_line_at < 1.0
+
+    # A fresh child that is making progress must not trip the detector: its
+    # step counter restarts from 1 (< the old value of 9), which the
+    # value-change tracking still counts as progress.
+    d._last_fired_at = float("-inf")  # clear cooldown from the spurious fire
+    d.observe_line(_line("step 1/19552 | loss 4.1"))
+    assert d._last_progress_value == "1"
+    assert d.observe_tick() is None

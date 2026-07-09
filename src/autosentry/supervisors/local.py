@@ -157,7 +157,18 @@ class LocalSupervisor(Supervisor):
                 yield None
                 continue
             if item is _SENTINEL:
-                return
+                # The current child's reader thread exited (its stdout
+                # closed). Do NOT terminate the iterator: a restart spawns
+                # a fresh reader thread that pushes the new child's lines
+                # onto this same shared queue. Returning here would
+                # permanently detach the monitor from all post-restart
+                # output — detectors would then never see the new child's
+                # progress and a stall detector would fire forever on the
+                # dead child's last value (issue #9). Treat the sentinel
+                # like a quiet tick; the monitor detects real process
+                # exits independently via ``status()``.
+                yield None
+                continue
             yield item  # type: ignore[misc]
 
     # ----- actions -----------------------------------------------------------

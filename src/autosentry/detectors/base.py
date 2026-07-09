@@ -43,6 +43,17 @@ class Detector(ABC):
     def _mark_fired(self) -> None:
         self._last_fired_at = time.monotonic()
 
+    def on_child_restart(self) -> None:  # noqa: B027 — deliberate no-op hook; most detectors are stateless across restarts
+        """Called when the supervised child is (re)started.
+
+        Detectors that track per-child state (e.g. a stall detector's
+        last-progress value and no-progress clock) must clear it here so
+        the new child is observed from a clean slate rather than carrying
+        the dead child's state forward (issue #9). The firing cooldown is
+        intentionally *not* reset — it governs the detector's own alert
+        rate, independent of which child is running. Default: no-op.
+        """
+
     @abstractmethod
     def observe_line(self, line: LogLine) -> Detection | None:
         """Called for each log line. Return a Detection or None."""
