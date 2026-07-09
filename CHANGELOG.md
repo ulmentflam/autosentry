@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI now tests Python 3.14 and no longer tests 3.11.** The test
+  matrix tracks the floor (`3.10`, still `requires-python`) plus the
+  three newest releases (`3.12`, `3.13`, `3.14`). PyPI classifiers
+  updated to match. The suite passes clean on 3.14.
+
 ## [0.13.2] — 2026-07-08
 
 ### Fixed
