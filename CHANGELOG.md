@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Demo GIF in the README.** Shows the heal loop end to end: a
+  supervised run OOMs, the `oom_halve_batch` rule restarts it with
+  `BATCH_SIZE` halved, training completes, and the incident lands in the
+  ledger. It's a real run — the stand-in `train.py` genuinely fails at
+  `BATCH_SIZE=8` and genuinely succeeds at `4`, so a regression in the
+  healing path shows up as a demo that no longer demonstrates anything.
+  Source and regeneration steps in `docs/demo/`.
+
 ## [0.14.0] — 2026-07-28
 
 ### Fixed
