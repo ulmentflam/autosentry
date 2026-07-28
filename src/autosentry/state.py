@@ -64,6 +64,28 @@ class MonitorState(BaseModel):
     last_heartbeat: str | None = None
     last_exit_code: int | None = None
 
+    # What the supervisor was actually supervising as of ``last_heartbeat``.
+    # A fresh heartbeat only proves the monitor loop is scheduling; it says
+    # nothing about whether there is a live child underneath it. Recording
+    # child liveness alongside the heartbeat is what lets an external
+    # watchdog (or ``autosentry probe``) tell "supervising" apart from
+    # "wedged with nothing to supervise" without parsing logs (issue #22).
+    child_running: bool = False
+    # ``started_at`` stamp of the current child, from the supervisor.
+    child_started_at: str | None = None
+    # When the supervisor first noticed it had no live child, and still
+    # hasn't got one back. Cleared the moment a child is running again.
+    child_dead_since: str | None = None
+
+    # Pipeline position, set by PipelineRunner via ``Monitor(stage=...)``.
+    # ``None`` on single-stage runs. Persisted so "which stage is this?"
+    # is answerable from state.json alone — previously the only record of
+    # the current stage was a reset_history entry for the *advance into*
+    # it, which reads identically whether the stage is running or wedged.
+    stage: str | None = None
+    stage_index: int | None = None  # 1-based
+    stage_count: int | None = None
+
     # Progress
     last_progress_value: str | None = None
     last_progress_at: str | None = None
@@ -114,8 +136,19 @@ class MonitorState(BaseModel):
         rule: str | None = None,
         new_pid: int | None = None,
         incident_id: str | None = None,
+        unverified: bool = True,
     ) -> None:
-        self.restarts += 1
+        """Record a child restart in the history and bump the counters.
+
+        ``unverified=False`` records the restart for audit but leaves the
+        unverified-restart budget alone. That's for restarts which are
+        normal operation rather than recovery — a ``restart_always``
+        child that exits cleanly and gets brought back hasn't failed at
+        anything, so it shouldn't spend budget meant for healers that
+        can't land a fix.
+        """
+        if unverified:
+            self.restarts += 1
         self.restarts_total += 1
         self.last_restart_at = _now()
         self.restart_history.append(

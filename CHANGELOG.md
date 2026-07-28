@@ -6,6 +6,54 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pipelines no longer stall after a stage's child exits ([#22]).** The
+  monitor's exit edge was `state.last_exit_code != status.exit_code` —
+  compared against a field that persists across Monitor instances. A
+  pipeline builds a fresh Monitor per stage over one shared
+  `state.json`, so stage N's clean exit left `last_exit_code: 0` on disk
+  and stage N+1's clean exit compared equal: the edge never fired,
+  `_handle_exit` never ran, the stage never completed, and the
+  supervisor looped forever over a dead child while the heartbeat kept
+  advancing. Every liveness check read healthy the whole time; one
+  reported occurrence idled a 7-GPU node for 13 hours, another went
+  unnoticed for three days. The same trap caught any second `autosentry
+  run` in a directory whose previous run exited 0. The edge is now keyed
+  on the child's `started_at`, so it fires once per child regardless of
+  what a previous stage or run left behind.
+- **`lifecycle: restart_always` now actually relaunches after a clean
+  exit ([#22]).** The default `exit_code` detector is non-zero-only, so
+  a clean exit fired no detection, no healer ran, and the
+  `restart_policy` fallback (which hangs off the detection path) never
+  got a chance — leaving a dead child under a live supervisor, the same
+  silent wedge by a different road. The relaunch is audited in
+  `restart_history` but doesn't spend the unverified-restart budget: a
+  service that exits 0 and comes back hasn't failed at anything.
+
+### Added
+
+- **The wedged state is now detectable from outside ([#22]).** A
+  heartbeat only proves a thread is scheduling. `state.json` gained
+  `child_running`, `child_started_at`, and `child_dead_since` next to
+  `last_heartbeat`, plus `stage` / `stage_index` / `stage_count` so the
+  current pipeline stage is answerable from state alone. `autosentry
+  probe` exposes them and reduces the pair to `monitor.wedged` —
+  heartbeat fresh, pid alive, no child for longer than the grace period
+  — which is exactly the case a naive "is it running?" check calls
+  healthy. `probe` exits 1 on it, so it drops into a cron liveness hook
+  unchanged. Probe `schema_version` is now `2`. `autosentry status` and
+  the TUI show child liveness beside the heartbeat.
+- **`monitor.dead_child_grace_seconds` (default 900).** A backstop, not
+  a normal code path: every legitimate route out of a dead child
+  resolves in seconds, so a child that stays dead across that many
+  seconds of live ticks means the supervisor is wedged. It logs,
+  notifies, and stops with a nonzero exit code, converting any future
+  variant of this failure from silent idle hours into a loud pipeline
+  failure. `0` disables it.
+
+[#22]: https://github.com/ulmentflam/autosentry/issues/22
+
 ### Changed
 
 - **CI now tests Python 3.14 and no longer tests 3.11.** The test

@@ -67,6 +67,15 @@ def status(
     table.add_row("pid", str(state.pid))
     table.add_row("started_at", str(state.started_at))
     table.add_row("last_heartbeat", str(state.last_heartbeat))
+    # A heartbeat with no child under it is the signature of a wedged
+    # supervisor (issue #22) — show them next to each other so the pair
+    # reads as one answer rather than two facts.
+    table.add_row(
+        "child",
+        "running" if state.child_running else f"none since {state.child_dead_since or '—'}",
+    )
+    if state.stage:
+        table.add_row("stage", f"{state.stage} ({state.stage_index}/{state.stage_count})")
     table.add_row("last_exit_code", str(state.last_exit_code))
     table.add_row("restarts", f"{state.restarts} / {format_budget(state.max_restarts)}")
     table.add_row("anomalies (recent)", str(len(state.anomalies)))

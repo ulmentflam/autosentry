@@ -15,6 +15,7 @@ import signal
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,10 +44,30 @@ _INBOX_PATH = Path(".autosentry/slack_inbox.jsonl")
 _INBOUND_MARKER_PATH = Path(".autosentry/inbox_poll_request")
 _ATTEMPTS_PATH = Path(".autosentry/attempts.tsv")
 
+# Identity used for the exit edge when a supervisor doesn't stamp a
+# ``started_at`` on its children. Every supervisor we ship does, so this
+# only degrades to "collapse repeated exits into one" for a third-party
+# supervisor that skips the stamp.
+_UNKNOWN_CHILD = "<unstamped-child>"
+
+
+@dataclass(frozen=True)
+class StageContext:
+    """Which pipeline stage this Monitor is running, for state.json.
+
+    Passed by :class:`autosentry.pipeline.PipelineRunner`. ``None`` on a
+    single-stage run.
+    """
+
+    name: str
+    index: int  # 1-based
+    count: int
+
 
 class Monitor:
-    def __init__(self, cfg: AutoSentryConfig) -> None:
+    def __init__(self, cfg: AutoSentryConfig, *, stage: StageContext | None = None) -> None:
         self.cfg = cfg
+        self.stage = stage
         SentryLogger.configure(
             log_path=cfg.resolve(cfg.monitor.log_dir) / "autosentry.log",
             also_stdout=True,
@@ -54,6 +75,9 @@ class Monitor:
         self.state_store = StateStore(cfg.resolve(cfg.state_path))
         self.state: MonitorState = self.state_store.load()
         self.state.max_restarts = cfg.process.restart_policy.max_restarts
+        self.state.stage = stage.name if stage else None
+        self.state.stage_index = stage.index if stage else None
+        self.state.stage_count = stage.count if stage else None
 
         self.supervisor = supervisor_for(cfg, log_dir=cfg.resolve(cfg.monitor.log_dir))
         self.detectors = build_detectors(cfg.detectors)
@@ -143,6 +167,15 @@ class Monitor:
         # than pid because some supervisors (docker) report ``pid=None``.
         # ``None`` until the first child is spawned.
         self._detector_child_started_at: str | None = None
+        # Identity of the child whose exit we've already run ``_handle_exit``
+        # for. See ``_is_new_child_exit`` — this is deliberately *not*
+        # derived from ``state.last_exit_code``, which persists across
+        # Monitor instances and made the exit edge unfireable on the
+        # second run in a directory (issue #22).
+        self._exit_handled_for: str | None = None
+        # ``time.monotonic()`` when we first noticed we had no live child
+        # and haven't got one back since. Drives the dead-child watchdog.
+        self._child_dead_since: float | None = None
 
     def _resolve_escalation_threshold(self) -> int:
         explicit = self.cfg.healing.escalate_to_claude_after
@@ -184,6 +217,7 @@ class Monitor:
         # restart-watch stamp so the first genuine restart (not this initial
         # spawn) triggers a detector reset. See ``_reset_detectors_for_restart``.
         self._detector_child_started_at = status.started_at
+        self._record_child_liveness(status)
         self._save_state()
         # Vault: write the supervisor-session note + the initial child-
         # run note for this first process spawn. Subsequent restarts
@@ -235,13 +269,20 @@ class Monitor:
                     last_tick = now
 
                 status = self.supervisor.status()
-                if not status.running and self.state.last_exit_code != status.exit_code:
+                if self._is_new_child_exit(status):
                     self.state.last_exit_code = status.exit_code
+                    self._record_child_liveness(status)
                     self._save_state()
                     if not self._handle_exit(status.exit_code or 0):
                         break
+                    # ``_handle_exit`` may have brought a child back.
+                    status = self.supervisor.status()
+
+                if self._dead_child_watchdog_tripped(status):
+                    break
 
                 self.state.last_heartbeat = _now_iso()
+                self._record_child_liveness(status)
                 self._save_state()
         finally:
             self.supervisor.stop()
@@ -283,6 +324,92 @@ class Monitor:
         for det in self.detectors:
             det.on_child_restart()
         self._detector_child_started_at = new_stamp
+
+    def _is_new_child_exit(self, status: ProcessStatus) -> bool:
+        """True exactly once per dead child — the exit edge.
+
+        The edge used to be ``state.last_exit_code != status.exit_code``,
+        which compares against a value that **persists across Monitor
+        instances**. A pipeline builds a fresh Monitor per stage over one
+        shared ``state.json``: stage N exits 0 and leaves
+        ``last_exit_code: 0`` on disk, so when stage N+1's child also
+        exits 0 the comparison is ``0 != 0`` — the edge never fires,
+        ``_handle_exit`` never runs, and the supervisor loops forever over
+        a dead child while the heartbeat keeps advancing. That is issue
+        #22: a stage that hangs indefinitely with zero children, logging
+        nothing, indistinguishable from healthy by any liveness check.
+        The same trap caught any second ``autosentry run`` in a directory
+        whose previous run had exited 0.
+
+        Keying on the child's ``started_at`` (every supervisor stamps a
+        fresh one in ``start()``) makes the edge a property of *this*
+        child instead of a persisted number, so it fires once per child
+        no matter what the previous stage or run left behind.
+        """
+        if status.running:
+            return False
+        key = status.started_at or _UNKNOWN_CHILD
+        if self._exit_handled_for == key:
+            return False
+        self._exit_handled_for = key
+        return True
+
+    def _record_child_liveness(self, status: ProcessStatus) -> None:
+        """Mirror the child's liveness into state alongside the heartbeat.
+
+        The heartbeat alone only proves a thread is scheduling. These
+        fields are what let an external watchdog — or ``autosentry
+        probe`` — distinguish a supervisor doing its job from one
+        heartbeating over nothing (issue #22).
+        """
+        self.state.child_running = status.running
+        self.state.child_started_at = status.started_at
+        if status.running:
+            self.state.child_dead_since = None
+        elif self.state.child_dead_since is None:
+            self.state.child_dead_since = _now_iso()
+
+    def _dead_child_watchdog_tripped(self, status: ProcessStatus) -> bool:
+        """Stop the monitor once it has been supervising nothing for too long.
+
+        Returns True when the caller should break out of the loop. Every
+        legitimate route out of a dead child resolves in seconds (healer
+        action, ``restart_policy`` fallback, lifecycle gate), and slow
+        healer work blocks the loop rather than ticking through it — so a
+        child that stays dead across ``dead_child_grace_seconds`` of live
+        ticks means the supervisor is wedged, whatever the cause. Failing
+        loudly here turns any future variant of issue #22 into a
+        nonzero exit and a notification instead of silent idle hours.
+        """
+        if status.running:
+            self._child_dead_since = None
+            return False
+        if self._child_dead_since is None:
+            self._child_dead_since = time.monotonic()
+            return False
+        grace = self.cfg.monitor.dead_child_grace_seconds
+        if grace <= 0:
+            return False
+        dead_for = time.monotonic() - self._child_dead_since
+        if dead_for < grace:
+            return False
+        # Nothing brought the child back and nothing decided to stop. Say so
+        # and exit nonzero: a wedged supervisor should look like a failure,
+        # not like a stage that finished.
+        stage_note = f" (stage {self.state.stage!r})" if self.state.stage else ""
+        log().error(
+            f"no live child for {dead_for:.0f}s{stage_note} and no recovery in flight — "
+            f"supervisor is wedged; stopping (monitor.dead_child_grace_seconds={grace})"
+        )
+        self._notify(
+            "exit",
+            "supervisor wedged — no live child",
+            f"no child for {dead_for:.0f}s{stage_note}; last exit code "
+            f"{self.state.last_exit_code}. Stopping so this surfaces as a failure.",
+        )
+        self._final_exit_code = status.exit_code if status.exit_code else 1
+        self._stop = True
+        return True
 
     def _tick(self) -> None:
         status = self.supervisor.status()
@@ -428,9 +555,63 @@ class Monitor:
             )
             self._record_vault_exhaustion(detector=None)
             return False
+        if lifecycle == "restart_always" and exit_code == 0:
+            # Nothing downstream will pick this up: the ``exit_code``
+            # detector is non-zero-only by default, so a clean exit fires
+            # no detection, no healer runs, and the restart_policy
+            # fallback (which hangs off the detection path) never gets a
+            # chance. Before this, ``restart_always`` + a clean exit left
+            # a dead child under a live, heartbeating supervisor — the
+            # same silent wedge as issue #22, reached by a different road.
+            return self._restart_after_clean_exit(exit_code)
         # The exit_code detector will have already fired during the tick above. If
         # no recovery happened, give the user a chance to manually intervene.
         time.sleep(self.cfg.process.restart_policy.cooldown_seconds)
+        return True
+
+    def _restart_after_clean_exit(self, exit_code: int) -> bool:
+        """``restart_always``: bring the child back after a clean exit.
+
+        Restarting here is normal operation rather than recovery, so it
+        doesn't spend the unverified-restart budget — that counter is the
+        kill-switch for a healer that can't land a fix, and a service
+        that exits 0 and gets relaunched hasn't failed at anything. The
+        restart is still recorded in ``restart_history`` for the audit
+        trail. Returns True to keep the monitor loop running.
+        """
+        cooldown = self.cfg.process.restart_policy.cooldown_seconds
+        log().recovery(
+            f"lifecycle=restart_always — child exited cleanly (code {exit_code}); "
+            f"restarting after {cooldown}s cooldown"
+        )
+        if cooldown:
+            time.sleep(cooldown)
+        if self._stop:
+            return False
+        try:
+            status = self.supervisor.start()
+        except Exception as e:  # noqa: BLE001
+            log().error(f"restart_always failed to start child after clean exit: {e}")
+            self._notify(
+                "exit",
+                "restart_always could not relaunch child",
+                f"child exited {exit_code} and the relaunch raised: {e}",
+            )
+            self._final_exit_code = 1
+            return False
+        self.state.record_restart(
+            reason=f"lifecycle=restart_always relaunch after clean exit {exit_code}",
+            new_pid=status.pid,
+            unverified=False,
+        )
+        self.state.pid = status.pid
+        self._record_child_liveness(status)
+        self._save_state()
+        self._record_vault_child_restart(
+            pid=status.pid,
+            started_at=status.started_at or _now_iso(),
+            reason="restart_always: clean exit",
+        )
         return True
 
     def _restart_policy_fallback(self, det: Detection) -> None:
@@ -482,9 +663,11 @@ class Monitor:
             new_pid=status.pid,
         )
         self.state.pid = status.pid
-        # Clear so the next exit registers as a fresh transition and re-fires
-        # the detector path, rather than being treated as the same old exit.
-        self.state.last_exit_code = None
+        # ``last_exit_code`` used to be cleared here so the next exit read
+        # as a fresh transition. The exit edge is now keyed on the child's
+        # identity (see ``_is_new_child_exit``), so the field can keep
+        # meaning what it says — the last exit code we actually observed.
+        self._record_child_liveness(status)
         self._save_state()
         self._notify(
             "recovery",
