@@ -17,10 +17,10 @@ jobs:
     name: build distributions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
@@ -34,7 +34,7 @@ jobs:
         run: uv run --with twine twine check dist/*
 
       - name: Upload built distributions
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/*
@@ -51,7 +51,7 @@ jobs:
       id-token: write   # trusted publishing — no API token
     steps:
       - name: Download dist
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -72,13 +72,13 @@ jobs:
       contents: write
     steps:
       - name: Download dist
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
@@ -111,14 +111,14 @@ jobs:
     continue-on-error: true # release is already published; keep the run green
     steps:
       - name: Checkout autosentry (formula scaffold)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           path: autosentry
           persist-credentials: false # read-only; never push back to this repo
 
       - name: Checkout homebrew-tap
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ulmentflam/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
