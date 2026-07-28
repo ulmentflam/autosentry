@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-28
+
 ### Fixed
 
 - **Pipelines no longer stall after a stage's child exits ([#22]).** The
@@ -60,6 +62,19 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matrix tracks the floor (`3.10`, still `requires-python`) plus the
   three newest releases (`3.12`, `3.13`, `3.14`). PyPI classifiers
   updated to match. The suite passes clean on 3.14.
+- **GitHub Actions upgraded across CI, pre-commit, and release**
+  ([#15], [#18], [#19], [#20], [#21]): `actions/checkout` v5 → v7,
+  `astral-sh/setup-uv` v7 → v9.0.0 (upstream stopped publishing
+  floating major tags after v7, so the exact pin is required),
+  `actions/setup-python` v5 → v7, `actions/upload-artifact` v6 → v7,
+  `actions/download-artifact` v6 → v8, and
+  `softprops/action-gh-release` v2 → v3. No workflow logic changed.
+
+[#15]: https://github.com/ulmentflam/autosentry/pull/15
+[#18]: https://github.com/ulmentflam/autosentry/pull/18
+[#19]: https://github.com/ulmentflam/autosentry/pull/19
+[#20]: https://github.com/ulmentflam/autosentry/pull/20
+[#21]: https://github.com/ulmentflam/autosentry/pull/21
 
 ## [0.13.2] — 2026-07-08
 
