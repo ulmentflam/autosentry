@@ -61,6 +61,13 @@ monitor:
   log_dir: ".autosentry/logs"
   log_tail_lines: 2000
   log_excerpt_lines: 200          # how many lines per incident's log_excerpt.txt
+  # Backstop for the one failure a liveness check can't see: the supervisor
+  # up and heartbeating with no child under it. Every normal route out of a
+  # dead child resolves in seconds, so a child that stays dead this long
+  # means something is wedged — autosentry logs it, notifies, and exits
+  # nonzero rather than idling. `autosentry probe` reports the same state as
+  # `wedged: true`. Set to 0 to disable.
+  dead_child_grace_seconds: 900
 
 # Files snapshotted into every incident folder. Paths are relative to this
 # config file. Anything you want to be able to inspect later when something

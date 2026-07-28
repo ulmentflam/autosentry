@@ -400,7 +400,10 @@ def test_no_recovery_falls_back_to_restart_policy_when_child_dead(tmp_path: Path
     monitor.supervisor.start.assert_called_once()
     assert monitor.state.restarts == 1
     assert monitor.state.pid == 60741
-    assert monitor.state.last_exit_code is None  # cleared so next exit is a fresh transition
+    # ``last_exit_code`` is no longer wiped here to force the next exit to
+    # read as a transition — the exit edge keys on the child's identity
+    # instead (issue #22), so the field keeps meaning what it says.
+    assert monitor.state.child_running is True
     assert monitor._stop is False
 
 

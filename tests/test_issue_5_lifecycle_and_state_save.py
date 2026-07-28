@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 from autosentry.config import load_config
 from autosentry.monitor import Monitor
 from autosentry.state import StateStore
+from autosentry.supervisors.base import ProcessStatus
 
 
 def _write_cfg(tmp_path: Path, lifecycle: str | None = None) -> Path:
@@ -53,7 +54,10 @@ def _monitor(tmp_path: Path, monkeypatch, lifecycle: str | None = None) -> Monit
     cfg = load_config(_write_cfg(tmp_path, lifecycle=lifecycle))
     monitor = Monitor(cfg)
     monitor.supervisor = MagicMock()
-    monitor.supervisor.status.return_value = MagicMock(running=False, pid=None, exit_code=0)
+    monitor.supervisor.status.return_value = ProcessStatus(running=False, pid=None, exit_code=0)
+    # ``restart_always`` relaunches the child itself on a clean exit
+    # (issue #22), so ``start()`` has to return a real status object.
+    monitor.supervisor.start.return_value = ProcessStatus(running=True, pid=4242)
     monitor._notify = MagicMock()
     return monitor
 
@@ -93,6 +97,8 @@ def test_handle_exit_restart_always_keeps_running_on_clean_exit(
     cont = monitor._handle_exit(0)
     assert cont is True
     assert monitor._final_exit_code == 0
+    # ...and "keeps running" means a live child, not just a live loop.
+    monitor.supervisor.start.assert_called_once()
 
 
 def test_handle_exit_restart_on_failure_still_routes_nonzero(tmp_path: Path, monkeypatch) -> None:

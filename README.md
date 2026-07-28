@@ -258,6 +258,30 @@ autosentry reset --reason "fixed config"   # clear the restart budget, keep audi
 autosentry reset --no-restart              # clear-and-exit (useful before a different `run` command)
 ```
 
+#### Is it actually supervising something?
+
+"Is the process running?" is the wrong question to ask a supervisor — it
+answers yes whether it's working or wedged with nothing underneath it.
+`state.json` records child liveness next to the heartbeat, and `autosentry
+probe` reduces the pair to one field:
+
+```bash
+autosentry probe | jq '.monitor | {running, child_running, wedged, stage, child_dead_seconds}'
+```
+
+`wedged: true` means the heartbeat is fresh, the pid is alive, and there
+has been no child for longer than `monitor.dead_child_grace_seconds` — the
+one state that looks healthy to every naive check. `probe` exits 1 on it,
+so it drops into a cron liveness hook as-is:
+
+```bash
+*/5 * * * * cd /path/to/run && autosentry probe -q >/dev/null || systemctl restart autosentry
+```
+
+The monitor also catches this itself: past the same grace period it logs,
+notifies, and exits nonzero rather than idling (so a pipeline stage fails
+loudly instead of hanging).
+
 ### Multi-step pipelines
 
 Run two or more commands sequentially under one supervisor — useful for
@@ -500,6 +524,7 @@ The top-level shape:
 | `monitor.poll_interval_seconds` | int | `30`                       | tick rate for status checks and tick-driven detectors |
 | `monitor.log_dir`  | str           | `.autosentry/logs`               | structured log + supervised process log live here |
 | `monitor.log_excerpt_lines` | int  | `200`                            | lines per incident `log_excerpt.txt` |
+| `monitor.dead_child_grace_seconds` | int | `900`                     | how long the supervisor may run with no live child before it calls itself wedged, notifies, and exits nonzero. `0` disables |
 | `config_snapshots` | list[str]     | `[]`                             | files copied verbatim into every incident folder |
 | `source_explode.context_lines` | int | `10`                          | lines around hot line when AST framing fails |
 | `source_explode.languages` | list | `[python, javascript, typescript, go, rust, java]` | tree-sitter grammars to load |

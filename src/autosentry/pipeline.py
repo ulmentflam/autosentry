@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 
 from autosentry.config import AutoSentryConfig, ProcessConfig, StageSpec
 from autosentry.logger import log
-from autosentry.monitor import Monitor
+from autosentry.monitor import Monitor, StageContext
 from autosentry.state import StateStore, append_reset_log
 
 
@@ -108,7 +108,19 @@ class PipelineRunner:
             # / cwd / env directly; we swap in the stage's values for the
             # duration of this stage).
             stage_cfg = self._stage_scoped_cfg(stage)
-            exit_code = Monitor(stage_cfg).run()
+            # The stage context lands in state.json so "which stage is
+            # this supervisor on?" is answerable from state alone. Without
+            # it the only record was a reset_history entry for the advance
+            # *into* the stage, which reads the same whether the stage is
+            # running normally or wedged (issue #22).
+            exit_code = Monitor(
+                stage_cfg,
+                stage=StageContext(
+                    name=stage.name,
+                    index=idx + 1,
+                    count=len(self.cfg.process.stages),
+                ),
+            ).run()
 
             # Capture the stage's final restart count before it gets cleared
             # for the next stage — surfaces "did we burn through the budget?"
@@ -149,6 +161,7 @@ class PipelineRunner:
                     f"pipeline: stage {stage.name!r} failed (exit {exit_code}); "
                     f"aborting — {len(self.cfg.process.stages) - idx - 1} stage(s) skipped"
                 )
+                self._clear_stage_marker()
                 return exit_code
 
             self._save_pipeline(pipeline)
@@ -157,6 +170,7 @@ class PipelineRunner:
         pipeline.ended_at = _now_iso()
         pipeline.current_stage = None
         self._save_pipeline(pipeline)
+        self._clear_stage_marker()
         log().info(f"pipeline: all {len(self.cfg.process.stages)} stage(s) complete")
         return 0
 
@@ -176,6 +190,22 @@ class PipelineRunner:
             status="running",
             stages=[StageResult(name=s.name) for s in self.cfg.process.stages],
         )
+
+    def _clear_stage_marker(self) -> None:
+        """Drop the stage fields from state.json once the pipeline ends.
+
+        Leaving them set would make a finished pipeline read as though it
+        were still parked on its last stage — precisely the ambiguity the
+        fields exist to remove.
+        """
+        state = self.state_store.load()
+        state.stage = None
+        state.stage_index = None
+        state.stage_count = None
+        try:
+            self.state_store.save(state)
+        except OSError as e:  # noqa: BLE001
+            log().error(f"pipeline: could not clear stage marker in state: {e}")
 
     def _save_pipeline(self, pipeline: PipelineState) -> None:
         """Atomic write — same shape as StateStore.save (mirrors that

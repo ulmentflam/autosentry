@@ -136,8 +136,9 @@ def _patch_monitor(monkeypatch, exit_codes_by_command: dict[str, int]):
     """
 
     class _StubMonitor:
-        def __init__(self, cfg) -> None:  # noqa: ANN001
+        def __init__(self, cfg, *, stage=None) -> None:  # noqa: ANN001
             self.cfg = cfg
+            self.stage = stage
 
         def run(self) -> int:
             key = " ".join(self.cfg.process.command)

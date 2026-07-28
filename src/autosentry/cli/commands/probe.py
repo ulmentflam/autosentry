@@ -8,7 +8,7 @@ hook can act on it programmatically.
 Output shape (stable; bump ``schema_version`` on breaking changes)::
 
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "config_path": "...",
       "monitor": {
         "running": true,            # PID alive AND heartbeat fresh
@@ -17,7 +17,13 @@ Output shape (stable; bump ``schema_version`` on breaking changes)::
         "last_heartbeat": "2026-05-30T18:15:19+00:00",
         "heartbeat_age_seconds": 12.4,
         "stale": false,             # heartbeat older than the stall threshold
-        "last_exit_code": null
+        "last_exit_code": null,
+        "child_running": true,      # is there actually a child under it?
+        "child_dead_seconds": null, # how long there hasn't been one
+        "wedged": false,            # heartbeating fine, supervising nothing
+        "stage": "pretrain",        # pipeline position, null off-pipeline
+        "stage_index": 1,
+        "stage_count": 3
       },
       "dispatch_mode": "session",
       "pending_incidents": [
@@ -55,7 +61,8 @@ from autosentry.cli import app
 from autosentry.config import DEFAULT_CONFIG_PATH, AutoSentryConfig, load_config
 
 #: Bumped on breaking schema changes to the probe JSON output.
-PROBE_SCHEMA_VERSION = 1
+#: v2 added the child-liveness / wedge fields under ``monitor``.
+PROBE_SCHEMA_VERSION = 2
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -152,6 +159,30 @@ def _build_payload(cfg: AutoSentryConfig) -> dict[str, Any]:
     pid_alive = _pid_alive(pid)
     running = pid_alive and (hb_age is None or hb_age <= stall_threshold)
 
+    # "Wedged" is the failure mode a liveness check can't see: the
+    # supervisor process is up and the heartbeat is fresh, but there is no
+    # child underneath it and hasn't been for a long time (issue #22).
+    # ``pid_alive and not stale`` is exactly what every naive check calls
+    # healthy, so that's the case worth naming.
+    child_running = bool(state.get("child_running"))
+    child_dead_dt = _parse_iso(state.get("child_dead_since"))
+    child_dead_seconds = (
+        (datetime.now(tz=timezone.utc) - child_dead_dt).total_seconds()
+        if child_dead_dt is not None
+        else None
+    )
+    # The monitor's own backstop threshold when set; otherwise fall back to
+    # the stall threshold so the probe still reports something useful for
+    # users who disabled the backstop.
+    wedge_threshold = float(cfg.monitor.dead_child_grace_seconds or stall_threshold)
+    wedged = (
+        pid_alive
+        and not stale
+        and not child_running
+        and child_dead_seconds is not None
+        and child_dead_seconds > wedge_threshold
+    )
+
     cursor = _read_cursor(cfg)
     entries = _pending_incidents(cfg, after=cursor)
     pending = []
@@ -170,11 +201,20 @@ def _build_payload(cfg: AutoSentryConfig) -> dict[str, Any]:
             }
         )
 
+    stage = state.get("stage")
+    stage_note = f" [stage {stage}]" if stage else ""
+
     if not pid_alive:
         summary = f"monitor DOWN (pid={pid}); {len(pending)} pending incident(s)"
     elif stale:
         summary = (
             f"monitor STALE (heartbeat {hb_age:.0f}s old, threshold {stall_threshold:.0f}s); "
+            f"{len(pending)} pending incident(s)"
+        )
+    elif wedged:
+        summary = (
+            f"monitor WEDGED{stage_note} — heartbeat fresh but no child for "
+            f"{child_dead_seconds:.0f}s (threshold {wedge_threshold:.0f}s); "
             f"{len(pending)} pending incident(s)"
         )
     elif pending:
@@ -193,6 +233,12 @@ def _build_payload(cfg: AutoSentryConfig) -> dict[str, Any]:
             "heartbeat_age_seconds": hb_age,
             "stale": stale,
             "last_exit_code": state.get("last_exit_code"),
+            "child_running": child_running,
+            "child_dead_seconds": child_dead_seconds,
+            "wedged": wedged,
+            "stage": stage,
+            "stage_index": state.get("stage_index"),
+            "stage_count": state.get("stage_count"),
         },
         "dispatch_mode": cfg.dispatch.mode,
         "pending_incidents": pending,
@@ -211,7 +257,10 @@ def _inject_prompt(payload: dict[str, Any]) -> dict[str, Any] | None:
     """
     monitor = payload["monitor"]
     pending = payload["pending_incidents"]
-    if not pending and monitor["pid_alive"] and not monitor["stale"]:
+    # ``wedged`` arrived in schema v2; read it leniently so a v1 payload
+    # (or a hand-built one) still routes through the other branches.
+    wedged = bool(monitor.get("wedged"))
+    if not pending and monitor["pid_alive"] and not monitor["stale"] and not wedged:
         return None
 
     lines = ["autosentry: session-watch fired."]
@@ -225,6 +274,13 @@ def _inject_prompt(payload: dict[str, Any]) -> dict[str, Any] | None:
         lines.append(
             f"  Monitor heartbeat is STALE ({age:.0f}s old). "
             f"It may be hung — consider restarting it."
+        )
+    elif wedged:
+        dead = monitor.get("child_dead_seconds") or 0.0
+        stage = f" on stage {monitor.get('stage')}" if monitor.get("stage") else ""
+        lines.append(
+            f"  Monitor is WEDGED{stage}: heartbeat is fresh but it has had no "
+            f"child for {dead:.0f}s. It is supervising nothing — restart it."
         )
     if pending:
         lines.append(f"  {len(pending)} pending incident(s) waiting for session dispatch:")
@@ -283,7 +339,7 @@ def probe(
 
     Exit codes:
       0 — monitor healthy, no pending work
-      1 — pending incidents exist OR monitor is down / stale
+      1 — pending incidents exist OR monitor is down / stale / wedged
     """
     cfg = load_config(config)
 
@@ -309,6 +365,9 @@ def probe(
 
     monitor_info = payload["monitor"]
     has_work = (
-        bool(payload["pending_incidents"]) or not monitor_info["pid_alive"] or monitor_info["stale"]
+        bool(payload["pending_incidents"])
+        or not monitor_info["pid_alive"]
+        or monitor_info["stale"]
+        or monitor_info.get("wedged", False)
     )
     raise typer.Exit(code=1 if has_work else 0)

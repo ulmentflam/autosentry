@@ -60,9 +60,21 @@ def gather_snapshot(
         ("uptime", uptime),
         ("restarts", f"{state.restarts} / {format_budget(state.max_restarts)}"),
         ("last heartbeat", heartbeat),
+        # Paired with the heartbeat on purpose: a fresh heartbeat over a
+        # dead child is what a wedged supervisor looks like (issue #22).
+        (
+            "child",
+            "running"
+            if state.child_running
+            else f"none for {_relative_since(state.child_dead_since)}",
+        ),
         ("last exit code", str(state.last_exit_code) if state.last_exit_code is not None else "—"),
         ("recent anomalies", str(len(state.anomalies))),
     ]
+    if state.stage:
+        state_summary.insert(
+            1, ("stage", f"{state.stage} ({state.stage_index}/{state.stage_count})")
+        )
 
     incidents = _read_incidents_tail(cfg, incidents_limit)
     detectors = _detector_rows(cfg, incidents)

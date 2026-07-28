@@ -174,6 +174,19 @@ class MonitorConfig(BaseModel):
     log_dir: str = ".autosentry/logs"
     log_tail_lines: int = 2000
     log_excerpt_lines: int = 200  # how much to capture into each incident
+    # How long the supervisor may sit with no live child before it calls
+    # itself wedged, says so loudly, and stops. A supervisor that dies
+    # gets restarted by whatever service manager owns it; one that keeps
+    # heartbeating over nothing is invisible to every "is it running?"
+    # check there is, which is the worst failure shape available for an
+    # unattended pipeline (issue #22).
+    #
+    # This is a backstop, not a normal code path: every route out of a
+    # dead child (healer action, restart_policy fallback, lifecycle gate)
+    # resolves in seconds, and long healer work blocks the loop rather
+    # than ticking through it. 15 minutes leaves room for a slow
+    # session-dispatch handoff. ``0`` disables the backstop.
+    dead_child_grace_seconds: int = 900
 
 
 class SourceExplodeConfig(BaseModel):
