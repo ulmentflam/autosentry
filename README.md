@@ -14,6 +14,12 @@ Watch a command, catch the failure, fix it, leave a paper trail.
 [![pyrefly](https://img.shields.io/badge/typed-pyrefly-blueviolet.svg)](https://github.com/facebook/pyrefly)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
+<br />
+
+<img src="docs/demo.gif" width="900" alt="A terminal session: autosentry supervises a training run, catches a CUDA out-of-memory error in the log, matches it to the oom_halve_batch rule, restarts the process with BATCH_SIZE halved from 8 to 4, and the run completes. The process log shows the crash at batch_size=8 and the success at batch_size=4; autosentry incidents list shows the incident recorded with its detector, rule, and action." />
+
+<sub>A real run — `train.py` actually OOMs at `BATCH_SIZE=8`. Source in <a href="docs/demo/">docs/demo/</a>.</sub>
+
 </div>
 
 `autosentry` supervises a long-running command — an ML training run, a data

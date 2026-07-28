@@ -1,0 +1,41 @@
+process:
+  kind: local
+  command: ["python3", "train.py"]
+  cwd: "."
+  restart_policy:
+    max_restarts: 5
+    cooldown_seconds: 0
+
+monitor:
+  # Tighter than the 30s default so the demo doesn't spend its runtime
+  # waiting on a poll tick.
+  poll_interval_seconds: 1
+  log_dir: ".autosentry/logs"
+
+detectors:
+  - kind: pattern
+    name: oom
+    regex: "(OutOfMemoryError|CUDA out of memory)"
+  - kind: exit_code
+
+rules:
+  - name: oom_halve_batch
+    match: { detector: oom }
+    action:
+      kind: restart_with_env
+      set:
+        BATCH_SIZE: half
+      notify: true
+
+healing:
+  claude:
+    enabled: false
+
+vault:
+  enabled: false
+
+notifiers:
+  - kind: log
+
+state_path: ".autosentry/state.json"
+incidents_dir: ".autosentry/incidents"
