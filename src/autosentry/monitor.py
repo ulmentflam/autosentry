@@ -11,6 +11,7 @@ event becomes an incident folder + a notification.
 from __future__ import annotations
 
 import json
+import re
 import signal
 import threading
 import time
@@ -134,6 +135,9 @@ class Monitor:
         self._recent_attempts: dict[str, list[float]] = {}
         # When a budget burns through, remember which detectors are paused.
         self._budget_paused: set[str] = set()
+        # Consecutive-identical-failure tracking; see _note_repeat.
+        self._repeat_signature: str | None = None
+        self._repeat_count: int = 0
         # Force-Claude escalation. Flipped on when state.restarts reaches
         # the threshold; flipped off on the next kept verification. While
         # set, the next detection skips the rule healer and goes straight
@@ -678,6 +682,36 @@ class Monitor:
             ),
         )
 
+    @staticmethod
+    def _detection_signature(det: Detection) -> str:
+        """Identity of a failure for repeat-detection purposes.
+
+        Digits are collapsed so that messages differing only by a pid,
+        timestamp, line number or byte count still count as the same
+        failure -- "exited with code 127" at 03:11 and at 03:24 is one
+        recurring problem, not two.
+        """
+        return f"{det.detector}:{det.kind}:{re.sub(r'[0-9]+', '#', det.message)[:200]}"
+
+    def _note_repeat(self, det: Detection) -> bool:
+        """Track consecutive identical failures; True once the cap is passed.
+
+        Returns True only on the transition past the cap and on every
+        detection after it, so the caller can stop retrying. A detection
+        with a different signature resets the streak: interleaved
+        progress means the failure is not deterministic.
+        """
+        cap = self.cfg.process.restart_policy.max_identical_failures
+        if cap <= 0:
+            return False
+        sig = self._detection_signature(det)
+        if sig == self._repeat_signature:
+            self._repeat_count += 1
+        else:
+            self._repeat_signature = sig
+            self._repeat_count = 1
+        return self._repeat_count > cap
+
     def _fire_detection(self, det: Detection) -> None:
         if det.kind == "anomaly":
             log().anomaly(f"[{det.detector}] {det.message}")
@@ -701,7 +735,29 @@ class Monitor:
 
         # Refuse to attempt further fixes for a detector that has burned
         # through its budget. Still write the incident and notify.
+        repeat_exhausted = self._note_repeat(det)
+        if repeat_exhausted:
+            cap = self.cfg.process.restart_policy.max_identical_failures
+            log().error(
+                f"[{det.detector}] this exact failure has now repeated "
+                f"{self._repeat_count} times in a row (cap {cap}) — it is not "
+                f"transient. Recording the incident and stopping; restarting "
+                f"again would only repeat it. Fix the cause, then relaunch."
+            )
+            self._notify(
+                "exit",
+                f"repeated failure: {det.message[:100]}",
+                f"{self._repeat_count} identical failures in a row (cap {cap}); "
+                f"supervisor stopping rather than consuming the restart budget",
+            )
+            # Stop for real. Clearing `outcome` alone only declines to heal;
+            # `_restart_policy_fallback` would still restart the child on the
+            # no-action path, which is the loop this guard exists to break.
+            self._stop = True
+
         if session_dispatch:
+            outcome = None
+        elif repeat_exhausted:
             outcome = None
         elif det.detector in self._budget_paused or self._budget_exhausted(det.detector):
             log().recovery(

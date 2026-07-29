@@ -49,6 +49,30 @@ class RestartPolicy(BaseModel):
     # entirely (the supervisor will keep restarting until something
     # external stops it).
     max_restarts: int = 50
+
+    # Consecutive *identical* failures before the supervisor stops retrying.
+    #
+    # ``max_restarts`` is a budget for how many times a fix may fail to
+    # stick. It cannot tell a transient apart from a deterministic error,
+    # because both just decrement it. So a config mistake -- a missing
+    # binary, a bad path, an unwritable directory -- consumes the whole
+    # budget one identical failure at a time, and on a long pipeline that
+    # is measured in hours.
+    #
+    # Reported case: a stage failed with ``pixi: command not found``
+    # (exit 127, a PATH problem that could never resolve itself) and
+    # retried 55 times across ~14 hours, each attempt re-running a
+    # completed job's 10-minute evaluation step.
+    #
+    # This counts consecutive detections carrying the same signature and
+    # gives up once they exceed the cap, regardless of remaining
+    # ``max_restarts``. Any *different* detection resets the run: a flaky
+    # error interleaved with real progress is not a repeat.
+    #
+    # Default 5: enough that a genuinely transient fault repeating a few
+    # times still heals, low enough that an unfixable one surfaces in
+    # minutes instead of overnight. ``0`` disables the guard.
+    max_identical_failures: int = 5
     backoff: Literal["fixed", "exponential"] = "exponential"
     cooldown_seconds: int = 60
 

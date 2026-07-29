@@ -524,6 +524,7 @@ The top-level shape:
 | `process.cwd`      | str           | `.`                              | working dir, relative to the project root (the dir containing `.autosentry/`) |
 | `process.env`      | dict[str,str] | `{}`                             | env vars; values can interpolate `$VAR` / `${VAR}` |
 | `process.restart_policy.max_restarts` | int | `10`                 | when exceeded, monitor gives up |
+| `process.restart_policy.max_identical_failures` | int | `5` | consecutive *identical* failures before giving up, regardless of `max_restarts`. A deterministic error (bad path, missing binary) otherwise burns the whole budget one repeat at a time. A different failure resets the streak; `0` disables |
 | `process.restart_policy.cooldown_seconds` | int | `60`             | wait before restart |
 | `process.lifecycle`                   | enum          | `restart_on_failure`             | `restart_on_failure` (clean exit ends the supervisor; default since 0.8.5), `one_shot` (any exit ends it), `restart_always` (both clean and dirty exits route through the healer — pre-0.8.5 behavior) |
 | `dispatch.mode`                       | enum          | `builtin`                        | `builtin` (monitor runs the healer) or `session` (Claude Code session dispatches via `/autosentry` skill — preferred for Claude Code users; free) |
