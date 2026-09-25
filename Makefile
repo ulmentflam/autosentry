@@ -9,14 +9,14 @@ UV := $(shell command -v uv 2>/dev/null)
 
 # iCloud Drive (and other syncing filesystems) corrupt Python virtualenvs by
 # duplicating files and setting UF_HIDDEN on dotfiles. If this repo is under
-# such a path, force the venv outside it. Override by setting VENV explicitly.
+# such a path, keep the real venv under ~/Local and symlink .venv to it
+# (same pattern as ~/Local/pixi-envs). Override by setting VENV explicitly.
 ifeq ($(VENV),)
     IS_ICLOUD := $(findstring CloudDocs,$(CURDIR))
     ifneq ($(IS_ICLOUD),)
-        VENV := $(HOME)/.cache/autosentry-venv
-    else
-        VENV := .venv
+        VENV_REAL := $(HOME)/Local/venvs/autosentry
     endif
+    VENV := .venv
 endif
 export UV_PROJECT_ENVIRONMENT := $(VENV)
 
@@ -36,6 +36,10 @@ help:                  ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install:               ## Install package + dev deps (uses uv if available)
+	@if [ -n "$(VENV_REAL)" ] && [ ! -e .venv ]; then \
+	    mkdir -p "$(VENV_REAL)" && \
+	    { [ -L .venv ] || ln -s "$(VENV_REAL)" .venv; }; \
+	fi
 	@echo ">> venv: $(VENV)"
 	$(INSTALL_DEV)
 	@# Auto-install the pre-commit hook when pre-commit is available and

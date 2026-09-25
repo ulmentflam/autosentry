@@ -6,6 +6,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- iCloud checkouts now keep the development virtualenv at
+  `~/Local/venvs/autosentry`, with `.venv` symlinked to it. Git ignores
+  both the symlink and regular virtualenv directories.
+
 ### Added
 
 - **Demo GIF in the README.** Shows the heal loop end to end: a

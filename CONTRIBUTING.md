@@ -43,9 +43,9 @@ git commit --no-verify
 ```
 
 > macOS / iCloud Drive users: if your clone is under
-> `~/Library/Mobile Documents/`, the Makefile automatically points the venv at
-> `~/.cache/autosentry-venv` to dodge iCloud's `UF_HIDDEN` flag. Override with
-> `make install VENV=…`.
+> `~/Library/Mobile Documents/`, the Makefile automatically creates the real
+> venv at `~/Local/venvs/autosentry` and symlinks `.venv` to it, dodging
+> iCloud's `UF_HIDDEN` flag. Override with `make install VENV=…`.
 
 ### Useful targets
 

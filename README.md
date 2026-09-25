@@ -142,8 +142,8 @@ make install
 If your clone lives under `~/Library/Mobile Documents/`, iCloud sets
 `UF_HIDDEN` on `_*.pth` files inside any venv and Python's `site.py`
 then skips them, breaking editable installs. The `Makefile` detects
-this and points the venv at `~/.cache/autosentry-venv` automatically.
-Override with `make install VENV=/path/to/venv`.
+this and creates the real venv at `~/Local/venvs/autosentry`, with `.venv`
+symlinked to it, automatically. Override with `make install VENV=/path/to/venv`.
 
 </details>
 
