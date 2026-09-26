@@ -45,6 +45,11 @@ class LocalSupervisor(Supervisor):
         if self._proc is not None and self._proc.poll() is None:
             return self.status()
 
+        if self._proc is not None:
+            self.stop()
+
+        self.before_start()
+
         if not self.cfg.process.command:
             msg = "process.command is empty"
             raise SupervisorError(msg)
@@ -73,6 +78,7 @@ class LocalSupervisor(Supervisor):
             start_new_session=True,
         )
         self._started_at = datetime.now(tz=timezone.utc).isoformat()
+        self.on_resource("process_group", str(self._proc.pid))
 
         self._reader = threading.Thread(
             target=self._pump_lines,
@@ -84,7 +90,16 @@ class LocalSupervisor(Supervisor):
         return self.status()
 
     def stop(self, *, timeout: float = 30.0) -> ProcessStatus:
-        if self._proc is None or self._proc.poll() is not None:
+        if self._proc is None:
+            return self.status()
+        if self._proc.poll() is not None:
+            # A completed group leader can leave background workers alive.
+            # We own this group even after its leader has been reaped.
+            try:
+                os.killpg(self._proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self._finish_reader()
             return self.status()
 
         log().action(f"Stopping process pid={self._proc.pid} (SIGTERM, timeout={timeout}s)")
@@ -105,13 +120,28 @@ class LocalSupervisor(Supervisor):
                 pass
             self._proc.wait(timeout=5)
 
+        # The leader may obey SIGTERM while a background worker ignores it.
+        try:
+            os.killpg(self._proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self._finish_reader()
+        return self.status()
+
+    def _finish_reader(self) -> None:
+        if self._reader is not None:
+            self._reader.join(timeout=5)
+            if self._reader.is_alive():
+                log().error("process log reader did not finish; archived output may be incomplete")
+                return
+            self._reader = None
         if self._log_file is not None:
             self._log_file.write(
                 f"===== autosentry: stop {datetime.now(tz=timezone.utc).isoformat()} "
-                f"exit={self._proc.returncode} =====\n"
+                f"exit={self._proc.returncode if self._proc else None} =====\n"
             )
-            self._log_file.flush()
-        return self.status()
+            self._log_file.close()
+            self._log_file = None
 
     def status(self) -> ProcessStatus:
         if self._proc is None:
@@ -132,7 +162,7 @@ class LocalSupervisor(Supervisor):
                 line = raw.rstrip("\n")
                 log_file.write(raw)
                 try:
-                    self._queue.put(LogLine(text=line), timeout=1.0)
+                    self._queue.put_nowait(LogLine(text=line))
                 except queue.Full:
                     # If the consumer is so far behind we can't enqueue,
                     # drop the oldest item and try again. We'd rather see
@@ -146,7 +176,10 @@ class LocalSupervisor(Supervisor):
                     except queue.Full:
                         pass
         finally:
-            self._queue.put(_SENTINEL)
+            try:
+                self._queue.put_nowait(_SENTINEL)
+            except queue.Full:
+                pass
 
     def iter_log_lines(self) -> Iterator[LogLine | None]:
         """Yield log lines as they arrive; yield ``None`` on quiet ticks."""

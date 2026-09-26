@@ -76,7 +76,14 @@ class IncidentStore:
         ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
         slug = _slug(f"{w.kind}-{w.detector}")
         folder = self.root / f"{ts}-{slug}"
-        folder.mkdir(parents=True, exist_ok=False)
+        sequence = 0
+        while True:
+            try:
+                folder.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                sequence += 1
+                folder = self.root / f"{ts}-{slug}-{sequence:04d}"
         anchor = self.root.parent.parent
         display = folder.relative_to(anchor) if folder.is_relative_to(anchor) else folder
         log().action(f"Incident folder: {display}")

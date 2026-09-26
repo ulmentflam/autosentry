@@ -41,7 +41,7 @@ from rich.table import Table
 from autosentry import __version__
 from autosentry.cli import app
 from autosentry.cli.style import ACCENT, DIM, ERR, OK, WARN, console
-from autosentry.config import DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH
+from autosentry.config import DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH, AutoSentryConfig
 
 CheckStatus = Literal["ok", "warn", "fail"]
 
@@ -150,6 +150,25 @@ def _run_all_checks(config: Path) -> list[Check]:
         checks.append(_check_tree_sitter(cfg))
         checks.append(_check_claude_cli(cfg))
         checks.append(_check_healer_budget(cfg))
+        from autosentry.pipeline import PipelineRunner
+        from autosentry.preflight import check_launch
+
+        launches = (
+            [(s.name, PipelineRunner(cfg)._stage_scoped_cfg(s)) for s in cfg.process.stages]
+            if cfg.process.is_pipeline()
+            else [("process", cfg)]
+        )
+        for name, scoped in launches:
+            errors = check_launch(scoped)
+            checks.append(
+                Check(
+                    name=f"launch: {name}",
+                    status="fail" if errors else "ok",
+                    detail="; ".join(errors)
+                    if errors
+                    else "Executable, cwd, and requirements available",
+                )
+            )
     return checks
 
 
@@ -552,7 +571,7 @@ def _check_claude_mode_subprocess(cfg) -> Check:  # noqa: ANN001
 # ----- existing checks (carried over from <0.12.0) --------------------------
 
 
-def _check_config_loadable(config: Path) -> tuple[Check, object | None]:
+def _check_config_loadable(config: Path) -> tuple[Check, AutoSentryConfig | None]:
     from autosentry.config import load_config, resolve_existing_config
 
     found = resolve_existing_config(config)

@@ -66,6 +66,9 @@ class DockerSupervisor(Supervisor):
         if self._proc is not None and self._proc.poll() is None:
             return self.status()
 
+        self.before_start()
+        self.on_resource("docker", self._container_name)
+
         if not self.cfg.process.command:
             msg = "process.command is empty (need a `docker run …` invocation)"
             raise SupervisorError(msg)

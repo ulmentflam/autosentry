@@ -24,6 +24,14 @@ process:
   #   CUDA_VISIBLE_DEVICES: "0"
   #   BATCH_SIZE: "8"
 
+  # Pipeline deadline includes monitor startup, healing, and cleanup.
+  # Set a workload-appropriate bound; 0 disables it. Stages can override it.
+  max_stage_seconds: 0
+  stage_stop_grace_seconds: 5
+  # Check dependencies called inside scripts, beyond command[0].
+  required_executables: []
+  required_env: []
+
   restart_policy:
     # max_restarts is the kill-switch on *consecutive unverified*
     # restarts — the counter zeros on every kept fix, so a working
@@ -32,6 +40,10 @@ process:
     # it, low enough that a truly broken healer eventually gives up.
     # Set to 0 to disable the kill-switch entirely.
     max_restarts: 50
+    max_identical_failures: 5
+    # Independent rolling rate cap; kept fixes do not clear it. 0 disables it.
+    max_restarts_in_window: 0
+    restart_window_seconds: 3600
     backoff: exponential          # fixed | exponential
     cooldown_seconds: 60
 

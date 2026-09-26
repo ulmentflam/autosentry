@@ -29,6 +29,7 @@ from rich.table import Table
 from rich.text import Text
 
 from autosentry.config import AutoSentryConfig
+from autosentry.pipeline import load_pipeline_state
 from autosentry.state import StateStore, format_budget
 
 # ----- snapshot helpers ----------------------------------------------------
@@ -78,7 +79,16 @@ def gather_snapshot(
 
     incidents = _read_incidents_tail(cfg, incidents_limit)
     detectors = _detector_rows(cfg, incidents)
-    log_tail = _tail_log_file(cfg.resolve(cfg.monitor.log_dir) / "autosentry.log", log_tail_lines)
+    log_dir = cfg.resolve(cfg.monitor.log_dir)
+    if cfg.process.is_pipeline():
+        pipeline = load_pipeline_state(cfg.resolve(".autosentry/pipeline.json"))
+        if pipeline:
+            latest = next((s for s in reversed(pipeline.stages) if s.started_at), None)
+            if latest and latest.evidence_dir:
+                candidate = cfg.resolve(latest.evidence_dir)
+                if candidate.is_relative_to(cfg.resolve(".autosentry/runs")):
+                    log_dir = candidate
+    log_tail = _tail_log_file(log_dir / "autosentry.log", log_tail_lines)
     return TuiSnapshot(
         state_summary=state_summary,
         incidents=incidents,

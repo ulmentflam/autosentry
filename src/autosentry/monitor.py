@@ -27,13 +27,14 @@ from autosentry.git_ops import FixBranch
 from autosentry.healers import ClaudeHealer, HealerOutcome, RuleHealer
 from autosentry.inbox import apply_commands as apply_inbox_commands
 from autosentry.incidents import IncidentStore, IncidentWrite, SourceExploder
+from autosentry.journal import Journal
 from autosentry.ledger import Attempt, AttemptsLedger, now_iso
 from autosentry.logger import SentryLogger, log
 from autosentry.notifiers import build_notifiers
 from autosentry.notifiers.base import Notification
 from autosentry.state import MonitorState, StateStore, budget_exhausted, format_budget
 from autosentry.supervisors import supervisor_for
-from autosentry.supervisors.base import LogLine, ProcessStatus
+from autosentry.supervisors.base import LogLine, ProcessStatus, SupervisorError
 from autosentry.vault import VaultStore
 from autosentry.vault.narrator import Narrator
 from autosentry.vault.patterns import PatternIndex
@@ -63,6 +64,7 @@ class StageContext:
     name: str
     index: int  # 1-based
     count: int
+    run_id: str | None = None
 
 
 class Monitor:
@@ -79,8 +81,16 @@ class Monitor:
         self.state.stage = stage.name if stage else None
         self.state.stage_index = stage.index if stage else None
         self.state.stage_count = stage.count if stage else None
+        self.state.stop_reason = None
+        self.journal = Journal(
+            cfg.resolve(cfg.monitor.log_dir) / "events.jsonl",
+            run_id=stage.run_id if stage else None,
+            stage=stage.name if stage else None,
+        )
+        self._child_start_seen = self.state.started_at is not None
 
         self.supervisor = supervisor_for(cfg, log_dir=cfg.resolve(cfg.monitor.log_dir))
+        self.supervisor.before_start = self._before_child_start
         self.detectors = build_detectors(cfg.detectors)
         self.rule_healer = RuleHealer(cfg.rules)
         self.claude_healer = ClaudeHealer(cfg)
@@ -196,6 +206,56 @@ class Monitor:
     # ----- public lifecycle -------------------------------------------------
 
     def run(self) -> int:
+        try:
+            code = self._run()
+        except SupervisorError as exc:
+            self.state.stop_reason = self.state.stop_reason or str(exc)
+            self._final_exit_code = 1
+            self.supervisor.stop()
+            code = 1
+        self.journal.write(
+            "monitor_stopped",
+            exit_code=code,
+            reason=self.state.stop_reason,
+            restarts=self.state.restarts,
+            restarts_total=self.state.restarts_total,
+        )
+        self._save_state()
+        return code
+
+    def _before_child_start(self) -> None:
+        """Reserve a restart before any launch path, including inbox actions."""
+        if self._stop:
+            raise SupervisorError("Monitor is stopping; refusing another child launch")
+        policy = self.cfg.process.restart_policy
+        now = datetime.now(timezone.utc)
+        recent = []
+        for stamp in self.state.restart_window:
+            try:
+                age = (now - datetime.fromisoformat(stamp)).total_seconds()
+            except (ValueError, TypeError):
+                continue
+            if age < policy.restart_window_seconds:
+                recent.append(stamp)
+        self.state.restart_window = recent if policy.max_restarts_in_window else []
+        if self._child_start_seen and policy.max_restarts_in_window:
+            if len(recent) >= policy.max_restarts_in_window:
+                reason = (
+                    f"Restart rate limit reached: {len(recent)} attempts within "
+                    f"{policy.restart_window_seconds:g} seconds"
+                )
+                self.state.stop_reason = reason
+                self._stop = True
+                self._final_exit_code = 1
+                self.journal.write("restart_rate_limited", reason=reason)
+                self._save_state()
+                raise SupervisorError(reason)
+            self.state.restart_window.append(now.isoformat())
+        self.journal.write("child_start_requested", restart=self._child_start_seen)
+        self._child_start_seen = True
+        self._save_state()
+
+    def _run(self) -> int:
         """Run the monitor loop. Returns the exit code the CLI should
         propagate — the supervised child's last exit code when known,
         otherwise 0. See issue #5: in ``one_shot`` /
@@ -298,6 +358,8 @@ class Monitor:
 
     def _handle_signal(self, *_args) -> None:  # type: ignore[no-untyped-def]
         log().info("received termination signal — shutting down")
+        self.state.stop_reason = "Termination signal received"
+        self._final_exit_code = 128 + int(_args[0]) if _args else 130
         self._stop = True
 
     def _handle_line(self, line: LogLine) -> None:
@@ -412,6 +474,8 @@ class Monitor:
             f"{self.state.last_exit_code}. Stopping so this surfaces as a failure.",
         )
         self._final_exit_code = status.exit_code if status.exit_code else 1
+        self.state.stop_reason = f"No live child for {dead_for:.0f} seconds"
+        self.journal.write("dead_child_timeout", reason=self.state.stop_reason)
         self._stop = True
         return True
 
@@ -473,6 +537,8 @@ class Monitor:
             return
         applied_id: str | None = None
         for line in lines:
+            if self._stop:
+                break
             line = line.strip()
             if not line:
                 continue
@@ -496,6 +562,16 @@ class Monitor:
             )
             try:
                 self.supervisor.apply_action(action)
+                self.journal.write(
+                    "session_action_applied",
+                    action_id=entry_id,
+                    action=action.kind,
+                    incident_id=entry.get("incident_id"),
+                )
+                if action.kind == "abort":
+                    self._stop = True
+                    self._final_exit_code = 130
+                    self.state.stop_reason = f"Session action {entry_id} requested abort"
                 self.state.record_restart(
                     reason=f"session-dispatch action {action.kind}",
                     rule=entry.get("rule"),
@@ -506,6 +582,7 @@ class Monitor:
                 self._save_state()
             except Exception as e:  # noqa: BLE001
                 log().error(f"session-dispatch apply_action failed: {e}")
+                self.journal.write("session_action_failed", action_id=entry_id, reason=str(e))
             applied_id = entry_id
         if applied_id and applied_id != last_id:
             try:
@@ -517,12 +594,16 @@ class Monitor:
     def _handle_exit(self, exit_code: int) -> bool:
         """Return True to continue (after restart), False to stop the monitor."""
         log().info(f"process exited with code {exit_code}")
+        if self._stop and self._final_exit_code:
+            return False
         self._final_exit_code = exit_code
+        self.journal.write("child_exited", exit_code=exit_code)
         # Lifecycle gate (issue #5). A clean exit used to leave the monitor
         # ticking forever; ``one_shot`` and the default ``restart_on_failure``
         # now stop the supervisor instead of sitting idle.
         lifecycle = self.cfg.process.lifecycle
         if lifecycle == "one_shot":
+            self.state.stop_reason = f"Child exited with code {exit_code} (one_shot)"
             log().info(
                 f"lifecycle=one_shot — supervised work complete (exit {exit_code}); "
                 f"shutting supervisor down"
@@ -534,6 +615,7 @@ class Monitor:
             )
             return False
         if lifecycle == "restart_on_failure" and exit_code == 0:
+            self.state.stop_reason = "Child completed successfully"
             log().info(
                 "lifecycle=restart_on_failure and child exited cleanly — "
                 "shutting supervisor down (set lifecycle: restart_always to keep restarting)"
@@ -551,6 +633,8 @@ class Monitor:
         # been capped (the default), keep watching. Only stop when an
         # explicit cap has been set and we've burned through it.
         if budget_exhausted(self.state.restarts, self.state.max_restarts):
+            self.state.stop_reason = "Unverified restart budget exhausted"
+            self._final_exit_code = exit_code or 1
             log().error(f"max restarts ({self.state.max_restarts}) reached — giving up")
             self._notify(
                 "exit",
@@ -635,6 +719,8 @@ class Monitor:
         if self._stop:
             return
         if budget_exhausted(self.state.restarts, self.state.max_restarts):
+            self.state.stop_reason = "Unverified restart budget exhausted"
+            self._final_exit_code = 1
             log().error(
                 f"no recovery applied for {det.detector!r} and max restarts "
                 f"({self.state.max_restarts}) reached — stopping monitor"
@@ -713,6 +799,9 @@ class Monitor:
         return self._repeat_count > cap
 
     def _fire_detection(self, det: Detection) -> None:
+        if self._stop:
+            return
+        self.journal.write("detection", detector=det.detector, kind=det.kind, message=det.message)
         if det.kind == "anomaly":
             log().anomaly(f"[{det.detector}] {det.message}")
         else:
@@ -738,6 +827,11 @@ class Monitor:
         repeat_exhausted = self._note_repeat(det)
         if repeat_exhausted:
             cap = self.cfg.process.restart_policy.max_identical_failures
+            self.state.stop_reason = (
+                f"Identical failure limit exceeded ({self._repeat_count}, cap {cap})"
+            )
+            self._final_exit_code = 1
+            self.journal.write("repeat_failure_limit", reason=self.state.stop_reason)
             log().error(
                 f"[{det.detector}] this exact failure has now repeated "
                 f"{self._repeat_count} times in a row (cap {cap}) — it is not "
@@ -841,6 +935,19 @@ class Monitor:
         folder = self.incident_store.write(write)
         incident_id = folder.name
         self.last_incident_dir = folder
+        self.journal.write(
+            "incident",
+            incident_id=incident_id,
+            detector=det.detector,
+            action=outcome.action.model_dump() if outcome and outcome.action else None,
+            source=outcome.source if outcome else None,
+        )
+        if self.stage and self.stage.run_id:
+            evidence = self.cfg.resolve(self.cfg.monitor.log_dir) / "incidents" / incident_id
+            evidence.mkdir(parents=True, exist_ok=True)
+            report = folder / "report.md"
+            if report.exists():
+                (evidence / "report.md").write_bytes(report.read_bytes())
         if det.kind == "anomaly":
             self.state.record_anomaly(det.detector, det.message, incident_id=incident_id)
         # Vault: classify against the pattern index, then write the
@@ -877,6 +984,12 @@ class Monitor:
 
         # Apply the action.
         if outcome is not None and outcome.action is not None:
+            self.journal.write(
+                "recovery_started",
+                incident_id=incident_id,
+                source=outcome.source,
+                action=outcome.action.kind,
+            )
             apply_started = time.monotonic()
             # For Claude-driven fixes we land the edits on a dedicated branch
             # so a regression can be reverted cleanly. For rule-driven
@@ -925,6 +1038,15 @@ class Monitor:
 
             try:
                 self.supervisor.apply_action(outcome.action)
+                self.journal.write(
+                    "recovery_applied", incident_id=incident_id, action=outcome.action.kind
+                )
+                if outcome.action.kind == "abort":
+                    self._stop = True
+                    self._final_exit_code = 1
+                    self.state.stop_reason = f"Recovery requested abort for incident {incident_id}"
+                    self._save_state()
+                    return
                 self.state.record_restart(
                     reason=det.message,
                     rule=outcome.rule_name,
@@ -942,6 +1064,7 @@ class Monitor:
                 )
             except Exception as e:  # noqa: BLE001
                 log().error(f"apply_action failed: {e}")
+                self.journal.write("recovery_failed", incident_id=incident_id, reason=str(e))
                 self.attempts.update(
                     incident_id,
                     source_label,
@@ -1087,6 +1210,9 @@ class Monitor:
                 fix_branch,
                 attempt_index,
             ) = self._pending_verify.pop(detector_name)
+            self.journal.write(
+                "recovery_verified", incident_id=incident_id, source=source, detector=detector_name
+            )
             self.attempts.update(
                 incident_id,
                 source,
@@ -1142,6 +1268,9 @@ class Monitor:
             f"— action={action}"
         )
         self.attempts.update(incident_id, source, status="regressed")
+        self.journal.write(
+            "recovery_regressed", incident_id=incident_id, source=source, detector=det.detector
+        )
         self._record_vault_attempt_resolution(
             incident_id=incident_id,
             attempt_index=attempt_index,

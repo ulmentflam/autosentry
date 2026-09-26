@@ -66,6 +66,27 @@ def _drain_until(it, predicate, *, timeout: float = 5.0) -> list[str]:
     return collected
 
 
+def test_log_file_retains_tail_when_detector_queue_is_full(tmp_path):
+    sup = _local_supervisor(tmp_path)
+    sup.cfg.process.command = [
+        sys.executable,
+        "-c",
+        "for i in range(15000): print(i)\nprint('FINAL-EVIDENCE')",
+    ]
+    try:
+        sup.start()
+        deadline = time.monotonic() + 5
+        while sup.status().running and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not sup.status().running
+        sup.stop()
+        lines = (tmp_path / "logs" / "process.log").read_text().splitlines()
+        assert "FINAL-EVIDENCE" in lines
+        assert "14999" in lines
+    finally:
+        sup.stop()
+
+
 def test_iter_log_lines_survives_restart(tmp_path: Path):
     """Regression for issue #9: after a restart, the same iterator must keep
     delivering the *new* child's lines rather than terminating on the old

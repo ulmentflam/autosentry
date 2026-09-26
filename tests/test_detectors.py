@@ -82,6 +82,16 @@ def test_exit_code_detector():
     assert d.observe_status(ProcessStatus(running=False, exit_code=139)) is None
 
 
+def test_exit_detector_distinguishes_fast_children_with_identical_exit_codes():
+    detector = ExitCodeDetector()
+    first = ProcessStatus(running=False, exit_code=127, started_at="first-child")
+    second = ProcessStatus(running=False, exit_code=127, started_at="second-child")
+    assert detector.observe_status(first) is not None
+    assert detector.observe_status(first) is None
+    assert detector.observe_status(second) is not None
+    assert detector.observe_status(second) is None
+
+
 def test_stall_detector_no_output():
     # no metric_regex → "no output" mode. Use 0s threshold to force fire on tick.
     d = StallDetector(no_progress_seconds=0, cooldown_seconds=0)

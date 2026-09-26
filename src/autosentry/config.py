@@ -73,6 +73,8 @@ class RestartPolicy(BaseModel):
     # times still heals, low enough that an unfixable one surfaces in
     # minutes instead of overnight. ``0`` disables the guard.
     max_identical_failures: int = 5
+    max_restarts_in_window: int = Field(default=0, ge=0)
+    restart_window_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
     backoff: Literal["fixed", "exponential"] = "exponential"
     cooldown_seconds: int = 60
 
@@ -108,6 +110,9 @@ class StageSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     restart_policy: RestartPolicy | None = None  # falls back to process.restart_policy
     lifecycle: ProcessLifecycle | None = None  # falls back to process.lifecycle
+    max_stage_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    required_executables: list[str] = Field(default_factory=list)
+    required_env: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -141,6 +146,10 @@ class ProcessConfig(BaseModel):
     command: list[str] = Field(default_factory=list)
     cwd: str = "."
     env: dict[str, str] = Field(default_factory=dict)
+    max_stage_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
+    stage_stop_grace_seconds: float = Field(default=5, gt=0, allow_inf_nan=False)
+    required_executables: list[str] = Field(default_factory=list)
+    required_env: list[str] = Field(default_factory=list)
     restart_policy: RestartPolicy = Field(default_factory=RestartPolicy)
     # See :data:`ProcessLifecycle`. Default ``restart_on_failure`` so a clean
     # exit no longer leaves the monitor sitting idle indefinitely (#5).

@@ -301,16 +301,13 @@ def test_pipeline_passes_stage_context_and_clears_it_at_the_end(
 
     seen: list[StageContext] = []
 
-    class _StubMonitor:
-        def __init__(self, cfg, *, stage=None) -> None:  # noqa: ANN001
-            seen.append(stage)
+    from autosentry.stage_worker import StageOutcome
 
-        def run(self) -> int:
-            return 0
+    def run_stage(self, cfg, stage):
+        seen.append(stage)
+        return StageOutcome(0, "complete")
 
-    import autosentry.pipeline as pipeline_mod
-
-    monkeypatch.setattr(pipeline_mod, "Monitor", _StubMonitor)
+    monkeypatch.setattr(PipelineRunner, "_run_stage", run_stage)
     assert PipelineRunner(cfg).run() == 0
 
     assert [(s.name, s.index, s.count) for s in seen] == [("pretrain", 1, 2), ("sft", 2, 2)]

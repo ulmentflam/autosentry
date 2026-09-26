@@ -63,6 +63,7 @@ class MonitorState(BaseModel):
     started_at: str | None = None
     last_heartbeat: str | None = None
     last_exit_code: int | None = None
+    stop_reason: str | None = None
 
     # What the supervisor was actually supervising as of ``last_heartbeat``.
     # A fresh heartbeat only proves the monitor loop is scheduling; it says
@@ -107,6 +108,7 @@ class MonitorState(BaseModel):
     last_restart_at: str | None = None
     last_recovery_failed_for: str | None = None  # set when claude fix also failed
     restart_history: list[RestartRecord] = Field(default_factory=list)
+    restart_window: list[str] = Field(default_factory=list)
     # Manual + inter-stage resets. Capped at 200 like the others; older
     # entries roll off. Plain-text mirror lives at .autosentry/reset.log.
     reset_history: list[ResetRecord] = Field(default_factory=list)
@@ -195,6 +197,7 @@ class MonitorState(BaseModel):
         if len(self.reset_history) > 200:
             self.reset_history = self.reset_history[-200:]
         self.restarts = 0
+        self.restart_window = []
         # ``last_restart_at`` stays — it's a historical fact, not a
         # counter. ``restart_history`` only clears when explicitly asked.
         if clear_history:

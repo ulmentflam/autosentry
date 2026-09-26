@@ -135,18 +135,13 @@ def _patch_monitor(monkeypatch, exit_codes_by_command: dict[str, int]):
     pipeline by setting the dict; missing keys default to 0.
     """
 
-    class _StubMonitor:
-        def __init__(self, cfg, *, stage=None) -> None:  # noqa: ANN001
-            self.cfg = cfg
-            self.stage = stage
+    from autosentry.stage_worker import StageOutcome
 
-        def run(self) -> int:
-            key = " ".join(self.cfg.process.command)
-            return exit_codes_by_command.get(key, 0)
+    def run_stage(self, cfg, stage):
+        code = exit_codes_by_command.get(" ".join(cfg.process.command), 0)
+        return StageOutcome(code, f"Test stage exited {code}")
 
-    import autosentry.pipeline as pipeline_mod
-
-    monkeypatch.setattr(pipeline_mod, "Monitor", _StubMonitor)
+    monkeypatch.setattr(PipelineRunner, "_run_stage", run_stage)
 
 
 def test_happy_path_advances_through_every_stage(

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import subprocess
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +55,8 @@ class Supervisor(ABC):
         # action. The local supervisor uses these; SLURM and Docker push
         # them into their command's env at start time.
         self._env_overrides: dict[str, str] = {}
+        self.before_start: Callable[[], None] = lambda: None
+        self.on_resource: Callable[[str, str], None] = lambda kind, identity: None
 
     @abstractmethod
     def start(self) -> ProcessStatus: ...

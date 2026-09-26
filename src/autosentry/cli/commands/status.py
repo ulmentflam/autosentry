@@ -60,6 +60,9 @@ def status(
                 str(r.final_restarts) if r else "-",
             )
         console.print(pt)
+        if pipeline:
+            console.print(f"Run: {pipeline.pipeline_id}", markup=False)
+            console.print("Evidence: autosentry explain", markup=False)
 
     table = Table(title="autosentry status", show_header=True, header_style="bold")
     table.add_column("Field")
@@ -77,6 +80,8 @@ def status(
     if state.stage:
         table.add_row("stage", f"{state.stage} ({state.stage_index}/{state.stage_count})")
     table.add_row("last_exit_code", str(state.last_exit_code))
+    if state.stop_reason:
+        table.add_row("stop_reason", state.stop_reason)
     table.add_row("restarts", f"{state.restarts} / {format_budget(state.max_restarts)}")
     table.add_row("anomalies (recent)", str(len(state.anomalies)))
     console.print(table)

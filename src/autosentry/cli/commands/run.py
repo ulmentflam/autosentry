@@ -21,6 +21,11 @@ def run(
         help="Path to the config. Defaults to .autosentry/autosentry.yaml "
         "(falls back to ./autosentry.yaml).",
     ),
+    resume: bool = typer.Option(False, "--resume", help="Resume at the first incomplete stage."),
+    from_stage: str | None = typer.Option(None, "--from-stage", help="Restart at a named stage."),
+    check: bool = typer.Option(
+        False, "--check", help="Check all launch requirements without running."
+    ),
 ) -> None:
     """Start the supervisor and the detection loop.
 
@@ -39,9 +44,29 @@ def run(
     pane.
     """
     cfg = load_config(config)
+    if check:
+        from autosentry.preflight import check_launch
+
+        configs = (
+            [PipelineRunner(cfg)._stage_scoped_cfg(s) for s in cfg.process.stages]
+            if cfg.process.is_pipeline()
+            else [cfg]
+        )
+        errors = [error for scoped in configs for error in check_launch(scoped)]
+        for error in errors:
+            typer.echo(error, err=True)
+        if errors:
+            raise typer.Exit(126)
+        typer.echo("All launch requirements passed")
+        return
     if cfg.process.is_pipeline():
-        exit_code = PipelineRunner(cfg).run()
+        try:
+            exit_code = PipelineRunner(cfg).run(resume=resume, from_stage=from_stage)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     else:
+        if resume or from_stage:
+            raise typer.BadParameter("--resume and --from-stage require process.stages")
         exit_code = Monitor(cfg).run()
     # Propagate the child's exit code so ``one_shot`` and clean exits
     # under ``restart_on_failure`` surface correctly to a parent service

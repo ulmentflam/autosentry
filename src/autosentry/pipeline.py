@@ -1,48 +1,30 @@
-"""Multi-stage pipeline orchestrator.
-
-When ``process.stages`` is set, ``autosentry run`` dispatches into
-:class:`PipelineRunner` instead of constructing a single
-:class:`autosentry.monitor.Monitor`. The runner walks the stages in
-declaration order, building a fresh Monitor per stage with a
-stage-scoped copy of the config, and advances only when a stage's
-child exits cleanly. Failures abort the pipeline.
-
-Why a sibling to Monitor and not a Monitor mode:
-
-- Each stage has its own restart budget (the supervised child for
-  pretrain crashes for different reasons than SFT — sharing budget
-  across stages would conflate failures).
-- Each stage has its own supervisor lifetime, log buffer, vault run
-  id, and incident folder context. Spinning up a fresh Monitor per
-  stage is the simplest way to get those clean boundaries.
-- Between stages we want a controlled "reset" (clear the unverified
-  restart counter, log a ResetRecord with source="pipeline") so the
-  ledger shows exactly when stage N's budget started fresh and why.
-
-State lives in ``.autosentry/pipeline.json``. Each ``autosentry run``
-on a pipeline config starts fresh — pipeline.json is overwritten with
-a new ``PipelineState``. Resume-from-stage-N is a deliberately deferred
-feature; if the user wants it they can ``autosentry reset`` then
-manually edit pipeline.json or comment out completed stages.
-"""
+"""Sequential pipelines with durable run history and independent stage deadlines."""
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
+import os
+import signal
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from autosentry.config import AutoSentryConfig, ProcessConfig, StageSpec
-from autosentry.logger import log
-from autosentry.monitor import Monitor, StageContext
+from autosentry.journal import Journal
+from autosentry.monitor import StageContext
+from autosentry.preflight import check_launch
+from autosentry.stage_worker import StageOutcome, run_stage
 from autosentry.state import StateStore, append_reset_log
 
 
 def _now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 StageStatus = Literal["pending", "running", "complete", "failed", "skipped"]
@@ -55,15 +37,17 @@ class StageResult(BaseModel):
     started_at: str | None = None
     ended_at: str | None = None
     exit_code: int | None = None
-    # Restart counter at the moment the stage ended — useful for
-    # post-mortems of "did this stage burn through its budget?"
     final_restarts: int = 0
+    reason: str | None = None
+    fingerprint: str | None = None
+    evidence_dir: str | None = None
+    cleanup_errors: list[str] = Field(default_factory=list)
 
 
 class PipelineState(BaseModel):
-    """Persisted snapshot at ``.autosentry/pipeline.json``."""
-
-    pipeline_id: str  # ISO timestamp of pipeline start; doubles as run id
+    schema_version: int = 2
+    pipeline_id: str
+    parent_run_id: str | None = None
     started_at: str
     ended_at: str | None = None
     status: PipelineStatus = "running"
@@ -71,193 +55,272 @@ class PipelineState(BaseModel):
     stages: list[StageResult] = Field(default_factory=list)
 
 
-_PIPELINE_STATE_PATH = Path(".autosentry/pipeline.json")
-
-
 class PipelineRunner:
-    """Walks ``cfg.process.stages`` sequentially, one Monitor per stage."""
-
     def __init__(self, cfg: AutoSentryConfig) -> None:
         if not cfg.process.is_pipeline():
-            msg = "PipelineRunner constructed without process.stages set"
-            raise ValueError(msg)
+            raise ValueError("PipelineRunner requires process.stages")
         self.cfg = cfg
-        self.pipeline_state_path = cfg.resolve(_PIPELINE_STATE_PATH)
+        self.pipeline_state_path = cfg.resolve(".autosentry/pipeline.json")
         self.state_store = StateStore(cfg.resolve(cfg.state_path))
         self.reset_log_path = cfg.resolve(cfg.monitor.log_dir) / "reset.log"
+        self._signal = 0
 
-    # ----- public --------------------------------------------------------
+    def run(self, *, resume: bool = False, from_stage: str | None = None) -> int:
+        if resume and from_stage:
+            raise ValueError("Use either --resume or --from-stage, not both")
+        self.pipeline_state_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.pipeline_state_path.with_suffix(".lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ValueError("Another pipeline controller is running in this project") from exc
+            handlers = {}
+            if threading.current_thread() is threading.main_thread():
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    handlers[signum] = signal.signal(signum, self._cancel)
+            try:
+                return self._run(resume=resume, from_stage=from_stage)
+            finally:
+                for signum, handler in handlers.items():
+                    signal.signal(signum, handler)
 
-    def run(self) -> int:
-        """Run the pipeline. Returns the final exit code (0 on full success)."""
-        pipeline = self._initialize_pipeline_state()
-        self._save_pipeline(pipeline)
+    def _cancel(self, signum: int, _frame: object) -> None:
+        self._signal = signum
 
-        for idx, stage in enumerate(self.cfg.process.stages):
-            log().info(
-                f"pipeline: starting stage {idx + 1}/{len(self.cfg.process.stages)} "
-                f"({stage.name!r}) — cmd={' '.join(stage.command)}"
-            )
-            pipeline.current_stage = stage.name
-            result = pipeline.stages[idx]
-            result.status = "running"
-            result.started_at = _now_iso()
-            self._save_pipeline(pipeline)
+    def _fingerprint(self, stage: StageSpec) -> str:
+        payload = json.dumps(self._stage_scoped_cfg(stage).model_dump(mode="json"), sort_keys=True)
+        return hashlib.sha256(payload.encode()).hexdigest()
 
-            # Build a stage-scoped cfg view (the Monitor reads process.command
-            # / cwd / env directly; we swap in the stage's values for the
-            # duration of this stage).
-            stage_cfg = self._stage_scoped_cfg(stage)
-            # The stage context lands in state.json so "which stage is
-            # this supervisor on?" is answerable from state alone. Without
-            # it the only record was a reset_history entry for the advance
-            # *into* the stage, which reads the same whether the stage is
-            # running normally or wedged (issue #22).
-            exit_code = Monitor(
-                stage_cfg,
-                stage=StageContext(
-                    name=stage.name,
-                    index=idx + 1,
-                    count=len(self.cfg.process.stages),
-                ),
-            ).run()
-
-            # Capture the stage's final restart count before it gets cleared
-            # for the next stage — surfaces "did we burn through the budget?"
-            # in pipeline.json post-mortems without needing to dig into the
-            # vault.
-            current_state = self.state_store.load()
-            result.final_restarts = current_state.restarts
-            result.exit_code = exit_code
-            result.ended_at = _now_iso()
-
-            if exit_code == 0:
-                result.status = "complete"
-                log().info(f"pipeline: stage {stage.name!r} complete (exit 0)")
-                # Clear the unverified-restart counter between stages so the
-                # next stage starts with a clean budget. Mirror to reset.log
-                # so the audit shows the inter-stage transition explicitly.
-                if idx + 1 < len(self.cfg.process.stages):
-                    record = current_state.record_reset(
-                        reason=f"pipeline advance: {stage.name} → "
-                        f"{self.cfg.process.stages[idx + 1].name}",
-                        clear_history=False,
-                        stage=stage.name,
-                        source="pipeline",
-                    )
-                    self.state_store.save(current_state)
-                    append_reset_log(self.reset_log_path, record)
+    def _initialize_pipeline_state(
+        self,
+        *,
+        resume: bool = False,
+        from_stage: str | None = None,
+    ) -> PipelineState:
+        previous = load_pipeline_state(self.pipeline_state_path)
+        stages = [
+            StageResult(name=s.name, fingerprint=self._fingerprint(s))
+            for s in self.cfg.process.stages
+        ]
+        start = 0
+        if resume or from_stage:
+            if previous is None:
+                raise ValueError("No valid prior pipeline run is available to resume")
+            if [s.name for s in previous.stages] != [s.name for s in stages]:
+                raise ValueError("Pipeline stage names or order changed; start a fresh run")
+            if from_stage:
+                names = [s.name for s in stages]
+                if from_stage not in names:
+                    raise ValueError(f"Unknown stage: {from_stage}")
+                start = names.index(from_stage)
             else:
-                result.status = "failed"
-                # Mark remaining stages as skipped so the json reflects what
-                # didn't run, not just what failed.
-                for skipped in pipeline.stages[idx + 1 :]:
-                    skipped.status = "skipped"
-                pipeline.status = "failed"
-                pipeline.ended_at = _now_iso()
-                pipeline.current_stage = None
-                self._save_pipeline(pipeline)
-                log().error(
-                    f"pipeline: stage {stage.name!r} failed (exit {exit_code}); "
-                    f"aborting — {len(self.cfg.process.stages) - idx - 1} stage(s) skipped"
+                start = next(
+                    (i for i, s in enumerate(previous.stages) if s.status != "complete"),
+                    len(stages),
                 )
-                self._clear_stage_marker()
-                return exit_code
-
-            self._save_pipeline(pipeline)
-
-        pipeline.status = "complete"
-        pipeline.ended_at = _now_iso()
-        pipeline.current_stage = None
-        self._save_pipeline(pipeline)
-        self._clear_stage_marker()
-        log().info(f"pipeline: all {len(self.cfg.process.stages)} stage(s) complete")
-        return 0
-
-    # ----- helpers -------------------------------------------------------
-
-    def _initialize_pipeline_state(self) -> PipelineState:
-        """Fresh pipeline state — overwrites any prior run.
-
-        v1 deliberately doesn't resume mid-pipeline; every invocation is
-        a clean start. Resume can be added later behind --resume without
-        changing this default.
-        """
-        now = _now_iso()
+            for idx in range(start):
+                old = previous.stages[idx]
+                if old.status != "complete" or old.fingerprint != stages[idx].fingerprint:
+                    raise ValueError(
+                        f"Cannot skip stage {old.name!r}: completion or configuration is unverified"
+                    )
+                stages[idx] = old.model_copy(deep=True)
         return PipelineState(
-            pipeline_id=now,
-            started_at=now,
-            status="running",
-            stages=[StageResult(name=s.name) for s in self.cfg.process.stages],
+            pipeline_id=uuid4().hex,
+            started_at=_now_iso(),
+            stages=stages,
+            parent_run_id=previous.pipeline_id if previous and (resume or from_stage) else None,
         )
 
-    def _clear_stage_marker(self) -> None:
-        """Drop the stage fields from state.json once the pipeline ends.
+    def _run(self, *, resume: bool, from_stage: str | None) -> int:
+        pipeline = self._initialize_pipeline_state(resume=resume, from_stage=from_stage)
+        run_dir = self.cfg.resolve(".autosentry/runs") / pipeline.pipeline_id
+        journal = Journal(run_dir / "events.jsonl", run_id=pipeline.pipeline_id)
+        journal.write("pipeline_started", parent_run_id=pipeline.parent_run_id)
+        self._save_pipeline(pipeline)
+        for idx, stage in enumerate(self.cfg.process.stages):
+            result = pipeline.stages[idx]
+            if result.status == "complete":
+                journal.write("stage_reused", stage=stage.name, evidence_dir=result.evidence_dir)
+                continue
+            pipeline.current_stage = stage.name
+            result.status = "running"
+            result.started_at = _now_iso()
+            evidence = run_dir / "stages" / stage.name
+            evidence.mkdir(parents=True, exist_ok=True)
+            result.evidence_dir = str(evidence.relative_to(self.cfg.resolve(".")))
+            scoped = self._stage_scoped_cfg(stage)
+            scoped.monitor = scoped.monitor.model_copy(update={"log_dir": str(evidence)})
+            state = self.state_store.load()
+            prior_restarts = state.restarts
+            if idx == 0 or resume or from_stage:
+                # Fresh attempts never inherit an exhausted stage budget.
+                state.restarts = 0
+                state.restart_window = []
+                state.started_at = None
+                self.state_store.save(state)
+            state.stage = stage.name
+            state.stage_index = idx + 1
+            state.stage_count = len(pipeline.stages)
+            state.stop_reason = None
+            state.pid = None
+            state.child_running = False
+            state.child_started_at = None
+            state.child_dead_since = None
+            self.state_store.save(state)
+            self._save_pipeline(pipeline)
+            journal.write(
+                "stage_started",
+                stage=stage.name,
+                evidence_dir=result.evidence_dir,
+                max_stage_seconds=scoped.process.max_stage_seconds,
+                prior_restarts=prior_restarts,
+            )
+            errors = check_launch(scoped)
+            (evidence / "launch.json").write_text(
+                json.dumps(
+                    {
+                        "command": scoped.process.command,
+                        "cwd": str(scoped.resolve(scoped.process.cwd)),
+                        "environment_keys": sorted(scoped.process.env),
+                        "required_executables": scoped.process.required_executables,
+                        "required_env": scoped.process.required_env,
+                        "restart_policy": scoped.process.restart_policy.model_dump(),
+                        "detectors": [det.model_dump() for det in scoped.detectors],
+                        "lifecycle": scoped.process.lifecycle,
+                        "healer_mode": scoped.healing.claude.mode,
+                        "healer_enabled": scoped.healing.claude.enabled,
+                        "max_stage_seconds": scoped.process.max_stage_seconds,
+                        "preflight_errors": errors,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            journal.write("preflight", stage=stage.name, errors=errors)
+            if self._signal:
+                outcome = StageOutcome(128 + self._signal, "Pipeline interrupted before launch")
+            elif errors:
+                outcome = StageOutcome(126, "; ".join(errors))
+            else:
+                try:
+                    outcome = self._run_stage(
+                        scoped,
+                        StageContext(
+                            name=stage.name,
+                            index=idx + 1,
+                            count=len(pipeline.stages),
+                            run_id=pipeline.pipeline_id,
+                        ),
+                    )
+                except Exception as exc:
+                    outcome = StageOutcome(
+                        1, f"Stage controller error: {type(exc).__name__}: {exc}"
+                    )
+            state = self.state_store.load()
+            result.final_restarts = state.restarts
+            result.exit_code = outcome.exit_code
+            result.reason = outcome.reason
+            result.cleanup_errors = list(outcome.cleanup_errors)
+            result.ended_at = _now_iso()
+            result.status = "complete" if outcome.exit_code == 0 else "failed"
+            state.last_exit_code = outcome.exit_code
+            state.stop_reason = outcome.reason
+            if scoped.process.kind != "attach" and not outcome.cleanup_errors:
+                state.child_running = False
+                state.child_dead_since = result.ended_at
+            self.state_store.save(state)
+            (evidence / "state.json").write_text(state.model_dump_json(indent=2), encoding="utf-8")
+            ledger = self.cfg.resolve(".autosentry/attempts.tsv")
+            if ledger.exists():
+                (evidence / "attempts.tsv").write_bytes(ledger.read_bytes())
+            journal.write(
+                "stage_finished",
+                stage=stage.name,
+                exit_code=outcome.exit_code,
+                reason=outcome.reason,
+                cleanup_errors=outcome.cleanup_errors,
+            )
+            if outcome.exit_code:
+                for remaining in pipeline.stages[idx + 1 :]:
+                    remaining.status = "skipped"
+                pipeline.status = "failed"
+                return self._finish(pipeline, journal, outcome.exit_code)
+            if idx + 1 < len(pipeline.stages):
+                record = state.record_reset(
+                    f"pipeline advance: {stage.name} -> {pipeline.stages[idx + 1].name}",
+                    source="pipeline",
+                    stage=stage.name,
+                )
+                state.started_at = None
+                self.state_store.save(state)
+                append_reset_log(self.reset_log_path, record)
+            self._save_pipeline(pipeline)
+        pipeline.status = "complete"
+        return self._finish(pipeline, journal, 0)
 
-        Leaving them set would make a finished pipeline read as though it
-        were still parked on its last stage — precisely the ambiguity the
-        fields exist to remove.
-        """
+    def _run_stage(self, cfg: AutoSentryConfig, stage: StageContext) -> StageOutcome:
+        return run_stage(cfg, stage, lambda: self._signal)
+
+    def _finish(self, pipeline: PipelineState, journal: Journal, code: int) -> int:
+        pipeline.current_stage = None
+        pipeline.ended_at = _now_iso()
+        self._save_pipeline(pipeline)
+        journal.write("pipeline_finished", status=pipeline.status, exit_code=code)
         state = self.state_store.load()
         state.stage = None
         state.stage_index = None
         state.stage_count = None
-        try:
-            self.state_store.save(state)
-        except OSError as e:  # noqa: BLE001
-            log().error(f"pipeline: could not clear stage marker in state: {e}")
+        state.last_exit_code = code
+        failed = next((stage for stage in pipeline.stages if stage.status == "failed"), None)
+        state.stop_reason = failed.reason if failed else "Pipeline completed successfully"
+        if self.cfg.process.kind != "attach" and not (failed and failed.cleanup_errors):
+            state.child_running = False
+            state.child_dead_since = pipeline.ended_at
+        self.state_store.save(state)
+        from autosentry.diagnosis import build_bundle, render_bundle
+
+        run_dir = self.cfg.resolve(".autosentry/runs") / pipeline.pipeline_id
+        (run_dir / "diagnosis.md").write_text(
+            render_bundle(build_bundle(self.cfg, pipeline.pipeline_id)), encoding="utf-8"
+        )
+        return code
 
     def _save_pipeline(self, pipeline: PipelineState) -> None:
-        """Atomic write — same shape as StateStore.save (mirrors that
-        store's iCloud-evictor fallback so pipelines work in the same
-        cursed environments)."""
-        self.pipeline_state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.pipeline_state_path.with_suffix(self.pipeline_state_path.suffix + ".tmp")
-        payload = pipeline.model_dump_json(indent=2)
-        try:
-            with tmp.open("w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-            tmp.replace(self.pipeline_state_path)
-        except FileNotFoundError:
-            with self.pipeline_state_path.open("w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
+        archive = self.cfg.resolve(".autosentry/runs") / pipeline.pipeline_id / "pipeline.json"
+        for path in (archive, self.pipeline_state_path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".json.tmp")
+            with temporary.open("w", encoding="utf-8") as stream:
+                stream.write(pipeline.model_dump_json(indent=2))
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
 
     def _stage_scoped_cfg(self, stage: StageSpec) -> AutoSentryConfig:
-        """Return a copy of ``self.cfg`` with ``process`` swapped for the stage.
-
-        - ``command`` ← stage.command (always)
-        - ``cwd``     ← stage.cwd if set, else process.cwd
-        - ``env``     ← process.env updated with stage.env (stage wins)
-        - ``restart_policy`` ← stage value if set, else process value
-        - ``lifecycle``     ← stage value if set, else process value
-        - ``stages`` is cleared so the Monitor sees a single-stage cfg
-          and the is_pipeline() check returns False inside the stage.
-        """
-        merged_env = dict(self.cfg.process.env)
-        merged_env.update(stage.env)
-        new_process = ProcessConfig(
-            kind=self.cfg.process.kind,
+        process = self.cfg.process
+        scoped = ProcessConfig(
+            kind=process.kind,
             command=stage.command,
-            cwd=stage.cwd or self.cfg.process.cwd,
-            env=merged_env,
-            restart_policy=stage.restart_policy or self.cfg.process.restart_policy,
-            lifecycle=stage.lifecycle or self.cfg.process.lifecycle,
-            stages=[],
-            extra=dict(self.cfg.process.extra),
+            cwd=stage.cwd or process.cwd,
+            env={**process.env, **stage.env},
+            restart_policy=stage.restart_policy or process.restart_policy,
+            lifecycle=stage.lifecycle or process.lifecycle,
+            extra=dict(process.extra),
+            max_stage_seconds=(
+                stage.max_stage_seconds
+                if stage.max_stage_seconds is not None
+                else process.max_stage_seconds
+            ),
+            stage_stop_grace_seconds=process.stage_stop_grace_seconds,
+            required_executables=process.required_executables + stage.required_executables,
+            required_env=process.required_env + stage.required_env,
         )
-        return self.cfg.model_copy(update={"process": new_process})
+        return self.cfg.model_copy(update={"process": scoped})
 
 
 def load_pipeline_state(path: Path) -> PipelineState | None:
-    """Read pipeline.json if present. Returns None when the file is
-    missing or unparseable (treat as no pipeline run yet — callers
-    decide whether that's an error)."""
-    if not path.exists():
-        return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return PipelineState.model_validate(data)
+        return PipelineState.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None

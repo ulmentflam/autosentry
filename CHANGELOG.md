@@ -6,13 +6,25 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- iCloud checkouts now keep the development virtualenv at
-  `~/Local/venvs/autosentry`, with `.venv` symlinked to it. Git ignores
-  both the symlink and regular virtualenv directories.
+- Fast children with identical exit codes now each trigger exit detection, even
+  when a replacement exits before the monitor observes it running.
+- Multiple matching incidents in the same second retain distinct evidence folders.
+- Operator and recovery aborts stop pipelines with a nonzero exit instead of
+  allowing the next stage to run.
 
 ### Added
+
+- Independent pipeline stage deadlines, bounded cancellation, and a per-project
+  controller lock. A blocked monitor cannot disable the deadline.
+- `autosentry run --resume` and `--from-stage`, with configuration checks for
+  skipped stages and retained evidence from every prior attempt.
+- Stage launch preflight, `run --check`, and matching doctor checks for executable
+  availability, cwd, and explicitly declared script dependencies and environment.
+- Persistent rolling restart limits that remain in force after a verified fix.
+- Run and stage event journals, archived logs and incident reports, explicit stop
+  reasons, and `autosentry explain` to export cited evidence for existing agents.
 
 - **Demo GIF in the README.** Shows the heal loop end to end: a
   supervised run OOMs, the `oom_halve_batch` rule restarts it with
@@ -21,6 +33,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `BATCH_SIZE=8` and genuinely succeeds at `4`, so a regression in the
   healing path shows up as a demo that no longer demonstrates anything.
   Source and regeneration steps in `docs/demo/`.
+
+### Changed
+
+- iCloud checkouts now keep the development virtualenv at
+  `~/Local/venvs/autosentry`, with `.venv` symlinked to it. Git ignores
+  both the symlink and regular virtualenv directories.
 
 ## [0.14.0] — 2026-07-28
 

@@ -63,3 +63,31 @@ def test_write_incident_folder_layout(tmp_path: Path):
     assert entry["id"] == folder.name
     assert entry["detector"] == "oom"
     assert entry["rule"] == "oom_rule"
+
+
+def test_incidents_in_same_second_keep_distinct_evidence(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    import autosentry.incidents.store as module
+
+    fixed = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    monkeypatch.setattr(module, "datetime", SimpleNamespace(now=lambda **_: fixed))
+    store = IncidentStore(tmp_path / "incidents")
+    incident = IncidentWrite(
+        kind="error",
+        detector="exit_code",
+        message="failed",
+        process_kind="local",
+        command=["false"],
+        pid=1,
+        restart_index=0,
+        max_restarts=5,
+        log_excerpt=["failure"],
+    )
+    first = store.write(incident)
+    second = store.write(incident)
+    assert first != second
+    assert second.name.endswith("-0001")
+    assert (first / "report.md").exists() and (second / "report.md").exists()
+    assert len(store.index_path.read_text().splitlines()) == 2

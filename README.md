@@ -318,6 +318,87 @@ status` shows per-stage progress when stages are configured.
 `process.stages` and `process.command` are mutually exclusive — pick
 one. Detectors and rules are shared across every stage.
 
+For unattended pipelines, set a deadline and a rolling restart limit:
+
+```yaml
+process:
+  kind: local
+  max_stage_seconds: 86400
+  stage_stop_grace_seconds: 5
+  required_executables: [pixi]
+  required_env: [DATASET_ROOT]
+  restart_policy:
+    max_restarts: 50
+    max_identical_failures: 5
+    max_restarts_in_window: 8
+    restart_window_seconds: 3600
+  stages:
+    - name: prepare
+      command: [pixi, run, prepare]
+      max_stage_seconds: 3600
+    - name: train
+      command: [pixi, run, train]
+detectors:
+  - kind: exit_code
+  - kind: stall
+    no_progress_seconds: 1800
+```
+
+Choose deadlines for the workload. `max_stage_seconds: 0` disables the
+deadline (the default); a stage can override the process value. The controller
+runs separately from each monitor, so deadlines still fire if a monitor or
+healer blocks. Timeout returns exit `124`, records the reason, cancels the
+stage's owned workload, and skips later stages. Cleanup has a bounded grace
+period. Docker/SLURM cancellation failures are recorded for operator follow-up;
+attach mode never takes ownership of the attached process.
+
+The rolling restart cap counts launch attempts, including clean-exit relaunches
+and inbox/session actions. It persists across monitor relaunches, expires by
+wall-clock time, and resets between pipeline stages or on an explicit reset.
+A verified fix resets the unverified budget but leaves the rolling cap intact.
+
+Stage commands inherit the controller's environment, including cron's `PATH`.
+Use absolute executable paths or set `process.env.PATH`. Each stage checks its
+executable, working directory, `required_executables`, and `required_env` before
+launch. Script dependencies must be declared explicitly. Docker/SLURM checks
+run on the controller host; they do not inspect container or compute-node images.
+
+```bash
+autosentry run --check                 # check every stage without launching
+autosentry doctor                     # includes the same launch checks
+autosentry run --resume                # resume at the first incomplete stage
+autosentry run --from-stage train      # rerun train and everything after it
+```
+
+Resume requires the same stage names and order, and matching configuration for
+every completed stage being skipped. Failed-stage settings may change. It does
+not validate output files or source-code identity. Older runs without configuration
+fingerprints must start fresh. Only one pipeline controller may run per project.
+
+#### Understanding a failed run
+
+Each invocation gets a permanent `.autosentry/runs/<run-id>/` directory, even
+when resumed. It contains `pipeline.json`, an append-only `events.jsonl`, and
+separate stage logs, state snapshots, launch requirements, and incident reports.
+`pipeline.json` at the top level remains the latest-run pointer. Stage
+`evidence_dir` fields identify the full logs to tail while a pipeline runs.
+
+```bash
+autosentry explain                         # latest run, Markdown evidence bundle
+autosentry explain --json                   # structured equivalent
+autosentry explain --run-id <run-id>        # inspect an earlier run
+autosentry explain -o .autosentry/failure.md
+```
+
+Open the bundle in your Codex or Claude conversation and ask, for example:
+"Why did train stop? Which recovery attempts failed? Cite the evidence and
+identify the next check." This uses your existing agent and makes no provider
+calls. A `diagnosis.md` bundle is also written when the pipeline finishes.
+The bundle separates observed stop reasons from root-cause hypotheses, preserves
+source paths and timestamps, and includes bounded log excerpts and recent incident
+reports. Full logs remain on disk. Secret redaction is best-effort; inspect exports
+before sharing them outside your trusted tools.
+
 Bidirectional Slack (separate shell — the monitor stays offline-safe):
 
 ```bash
@@ -1082,7 +1163,9 @@ the [`CHANGELOG`](./CHANGELOG.md) calls them out.
 | `autosentry web` vault routes + Mermaid graph           | **stable**    |
 | `autosentry doctor --fix` auto-repair                   | **stable**    |
 | LLM vault narratives (`vault.narratives`)               | **stable**    |
-| PyPI release automation                                 | planned       |
+| PyPI release automation                                 | **stable**    |
+| Pipeline deadlines, checked resume, and launch preflight | implemented   |
+| Rolling restart limits and cited failure bundles         | implemented   |
 | Slack interactive buttons (approve/abort UI)            | planned       |
 
 ---

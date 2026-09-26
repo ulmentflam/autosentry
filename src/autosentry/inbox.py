@@ -103,6 +103,8 @@ def _apply_one(monitor: Monitor, rec: InboxRecord) -> None:
     if cmd == "abort":
         log().recovery(f"inbox: ABORT from {rec.user!r} — stopping monitor")
         monitor._stop = True
+        monitor._final_exit_code = 130
+        monitor.state.stop_reason = f"Operator abort from {rec.user!r}"
         try:
             monitor.supervisor.stop()
         except Exception as e:  # noqa: BLE001

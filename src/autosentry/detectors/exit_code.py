@@ -17,7 +17,7 @@ class ExitCodeDetector(Detector):
         super().__init__(name=name, cooldown_seconds=cooldown_seconds)
         self.nonzero_only = nonzero_only
         self._buf: deque[str] = deque(maxlen=_CTX)
-        self._fired_for_exit: int | None = None
+        self._fired_for_exit: tuple[str | None, int] | None = None
 
     def observe_line(self, line: LogLine) -> Detection | None:
         self._buf.append(line.text)
@@ -30,9 +30,12 @@ class ExitCodeDetector(Detector):
         if self.nonzero_only and status.exit_code == 0:
             return None
         # only fire once per exit
-        if self._fired_for_exit == status.exit_code:
+        # A fast replacement can exit before any running status is observed.
+        # Its identical code still represents a distinct child failure.
+        identity = (status.started_at, status.exit_code)
+        if self._fired_for_exit == identity:
             return None
-        self._fired_for_exit = status.exit_code
+        self._fired_for_exit = identity
         return Detection(
             detector=self.name,
             kind="error",

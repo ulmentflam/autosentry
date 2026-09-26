@@ -66,6 +66,7 @@ def _register_commands() -> None:
         analyze,
         dispatcher,
         doctor,
+        explain,
         healer,
         hooks,
         incidents,

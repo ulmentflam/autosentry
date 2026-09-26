@@ -105,6 +105,8 @@ class SlurmSupervisor(Supervisor):
             if current.running:
                 return current
 
+        self.before_start()
+
         if not self.cfg.process.command:
             msg = "process.command is empty (need an sbatch invocation)"
             raise SupervisorError(msg)
@@ -135,6 +137,7 @@ class SlurmSupervisor(Supervisor):
             msg = f"could not parse job id from sbatch output: {result.stdout.strip()!r}"
             raise SupervisorError(msg)
         self._job_id = m.group(1)
+        self.on_resource("slurm", self._job_id)
         self._started_at = datetime.now(tz=timezone.utc).isoformat()
         log().action(f"sbatch submitted job {self._job_id}")
 
