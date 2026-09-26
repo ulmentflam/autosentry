@@ -182,10 +182,10 @@ class DispatcherDaemon:
         self.outbox_path = outbox_path
         self.inbox_path = inbox_path
         self.state_path = state_path
-        self.poll_seconds = max(1.0, float(poll_seconds))
+        self.poll_seconds = max(1.0, poll_seconds)
         self.default_channel = default_channel
         self.inbound_marker_path = inbound_marker_path
-        self.idle_inbound_seconds = max(0.0, float(idle_inbound_seconds))
+        self.idle_inbound_seconds = max(0.0, idle_inbound_seconds)
         self.state = DispatcherState.load(state_path)
         self._stop = threading.Event()
         # Idle-state trackers.

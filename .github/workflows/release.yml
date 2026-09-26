@@ -15,7 +15,7 @@ permissions:
 jobs:
   build:
     name: build distributions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -43,7 +43,7 @@ jobs:
   publish-pypi:
     name: publish to PyPI
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/p/autosentry
@@ -67,7 +67,7 @@ jobs:
   github-release:
     name: GitHub release
     needs: [build, publish-pypi]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -107,7 +107,7 @@ jobs:
   brew-bump:
     name: Bump Homebrew tap formula
     needs: github-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true # release is already published; keep the run green
     steps:
       - name: Checkout autosentry (formula scaffold)

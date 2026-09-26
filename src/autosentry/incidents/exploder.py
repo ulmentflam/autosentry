@@ -186,7 +186,7 @@ class SourceExploder:
                 path = candidate
         if not path.exists():
             return ExplodedFrame(
-                file=str(frame.file),
+                file=frame.file,
                 line=frame.line,
                 lang=frame.lang,
                 raw=frame.raw,

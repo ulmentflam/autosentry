@@ -226,9 +226,7 @@ class Narrator:
             content = response.content if hasattr(response, "content") else str(response)
             if isinstance(content, list):
                 # Some providers return content as a list of blocks; join the text bits.
-                content = "".join(
-                    b.get("text", "") if isinstance(b, dict) else str(b) for b in content
-                )
+                content = "".join(b.get("text", "") if isinstance(b, dict) else b for b in content)
             content = content.strip()
         except Exception as e:  # noqa: BLE001
             log().error(f"vault narrator: LLM call failed: {type(e).__name__}: {e}")

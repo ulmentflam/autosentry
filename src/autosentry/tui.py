@@ -228,7 +228,7 @@ def run_tui(
     once: bool = False,
 ) -> None:
     """Block, refreshing the dashboard until Ctrl-C (or ``once=True``)."""
-    refresh = max(0.25, float(refresh))
+    refresh = max(0.25, refresh)
     console = console or Console()
     snapshot = gather_snapshot(cfg)
     if once:

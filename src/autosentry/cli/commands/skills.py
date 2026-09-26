@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import typer
 from rich.table import Table
@@ -97,14 +97,14 @@ def skills_install(
         raise typer.Exit(code=2)
 
     tools_arg = _normalize_tools_arg(tool)
-    skill_arg = cast(skills_mod.SkillName | str, skill)
+    skill_arg = cast(skills_mod.SkillName | Literal["all"], skill)
     scope_arg = cast(skills_mod.Scope, scope)
 
     try:
         results = skills_mod.install(
             target_dir=target,
             tools=tools_arg,
-            skill_name=skill_arg,  # type: ignore[arg-type]
+            skill_name=skill_arg,
             scope=scope_arg,
             force=force,
         )
