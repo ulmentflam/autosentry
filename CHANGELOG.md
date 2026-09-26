@@ -6,10 +6,20 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-09-26
+
 ### Fixed
 
 - Removed the deprecated Typer `is_flag` argument from the version option,
   eliminating the CLI import warning while preserving `--version` and `-V`.
+- Resolved six Pyrefly warnings by tightening the skill-name cast and removing
+  redundant conversions.
+- Pinned Ubuntu Actions runners to 24.04 to avoid the automatic image migration
+  and its warning.
+
+### Changed
+
+- Updated the setup-uv GitHub Action to v10.
 
 ## [0.15.0] - 2026-09-25
 
