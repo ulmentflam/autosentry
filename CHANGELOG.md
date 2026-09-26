@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-25
+
 ### Fixed
 
 - Fast children with identical exit codes now each trigger exit detection, even
@@ -16,6 +18,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Consecutive identical-failure limits stop deterministic retry loops before they
+  consume the entire restart budget.
 - Independent pipeline stage deadlines, bounded cancellation, and a per-project
   controller lock. A blocked monitor cannot disable the deadline.
 - `autosentry run --resume` and `--from-stage`, with configuration checks for
