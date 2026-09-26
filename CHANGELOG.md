@@ -6,6 +6,11 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Removed the deprecated Typer `is_flag` argument from the version option,
+  eliminating the CLI import warning while preserving `--version` and `-V`.
+
 ## [0.15.0] - 2026-09-25
 
 ### Fixed

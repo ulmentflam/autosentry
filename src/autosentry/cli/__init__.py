@@ -47,7 +47,6 @@ def _main(
         "--version",
         "-V",
         help="Print version and exit.",
-        is_flag=True,
         callback=_print_version,
         is_eager=True,
     ),
