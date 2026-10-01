@@ -24,7 +24,7 @@ jobs:
   # supported Python. If this is red, the test matrix doesn't bother.
   lint:
     name: lint + typecheck
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
@@ -87,7 +87,7 @@ jobs:
 
   build:
     name: build sdist + wheel
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: lint
     steps:
       - uses: actions/checkout@v7
